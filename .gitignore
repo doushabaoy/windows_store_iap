@@ -1,0 +1,19 @@
+.dart_tool/
+.flutter-plugins
+.flutter-plugins-dependencies
+.packages
+.pub-cache/
+build/
+pubspec.lock
+
+# IDE and local machine files
+.idea/
+.vscode/
+*.iml
+
+# Windows build outputs
+windows/flutter/ephemeral/
+example/windows/flutter/ephemeral/
+example/.dart_tool/
+example/build/
+example/pubspec.lock

@@ -1,0 +1,32 @@
+name: windows_store_iap
+description: Microsoft Store purchases and subscription entitlements for Flutter on Windows.
+version: 0.1.0
+homepage: https://github.com/doushabaoy/-windows_store_iap
+repository: https://github.com/doushabaoy/-windows_store_iap
+issue_tracker: https://github.com/doushabaoy/-windows_store_iap/issues
+
+topics:
+  - windows
+  - microsoft-store
+  - in-app-purchase
+  - subscriptions
+
+environment:
+  sdk: ">=2.19.0 <4.0.0"
+  flutter: ">=3.7.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  plugin_platform_interface: ^2.1.4
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: 2.0.1
+
+flutter:
+  plugin:
+    platforms:
+      windows:
+        pluginClass: WindowsIapPluginCApi
