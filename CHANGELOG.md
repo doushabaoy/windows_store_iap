@@ -1,3 +1,7 @@
+## 0.2.0
+- Initial release fo windwos_store_iap 0.2.0
+- Fix the bug.
+
 ## 0.1.0
 
 - Publish the enhanced fork as `windows_store_iap` and retain a compatibility
