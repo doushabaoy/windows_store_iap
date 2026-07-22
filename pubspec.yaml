@@ -1,9 +1,9 @@
 name: windows_store_iap
 description: Microsoft Store purchases and subscription entitlements for Flutter on Windows.
 version: 0.1.0
-homepage: https://github.com/doushabaoy/-windows_store_iap
-repository: https://github.com/doushabaoy/-windows_store_iap
-issue_tracker: https://github.com/doushabaoy/-windows_store_iap/issues
+homepage: https://github.com/doushabaoy/windows_store_iap
+repository: https://github.com/doushabaoy/windows_store_iap
+issue_tracker: https://github.com/doushabaoy/windows_store_iap/issues
 
 topics:
   - windows
