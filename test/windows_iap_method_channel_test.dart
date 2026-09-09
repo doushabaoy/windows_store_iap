@@ -25,6 +25,36 @@ void main() {
     }
   });
 
+  test('parses detailed purchase status and extended error', () async {
+    MethodCall? captured;
+    messenger.setMockMethodCallHandler(channel, (call) async {
+      captured = call;
+      return {
+        'status': StorePurchaseStatus.networkError.index,
+        'extendedErrorCode': '0x80072EE7',
+      };
+    });
+
+    final details = await platform.makePurchaseDetailed('9ABCDEF12345');
+    expect(captured?.method, 'makePurchaseDetailed');
+    expect(captured?.arguments, {'storeId': '9ABCDEF12345'});
+    expect(details.status, StorePurchaseStatus.networkError);
+    expect(details.extendedErrorCode, '0x80072EE7');
+    expect(details.hasExtendedError, isTrue);
+  });
+
+  test('rejects an invalid detailed purchase payload', () async {
+    messenger.setMockMethodCallHandler(
+      channel,
+      (call) async => {'status': 99, 'extendedErrorCode': null},
+    );
+
+    await expectLater(
+      platform.makePurchaseDetailed('9ABCDEF12345'),
+      throwsA(isA<FormatException>()),
+    );
+  });
+
   test('parses structured products', () async {
     messenger.setMockMethodCallHandler(
         channel,

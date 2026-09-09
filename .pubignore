@@ -1,4 +1,6 @@
 .dart_tool/
+.codegraph/
+.tool_state/
 .git/
 .github/
 .agents/
@@ -14,3 +16,4 @@ windows/flutter/ephemeral/
 pubspec.lock
 *.iml
 watch.bat
+doc/source_audit_*.md

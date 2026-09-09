@@ -30,6 +30,13 @@ abstract class WindowsIapPlatform extends PlatformInterface {
     throw UnimplementedError('makePurchase() has not been implemented.');
   }
 
+  /// Opens the Store purchase UI and returns status with HRESULT diagnostics.
+  Future<StorePurchaseDetails> makePurchaseDetailed(String storeId) {
+    throw UnimplementedError(
+      'makePurchaseDetailed() has not been implemented.',
+    );
+  }
+
   /// Returns products associated with the current Store application.
   Future<List<Product>> getProducts() {
     throw UnimplementedError('getProducts() has not been implemented.');

@@ -1,5 +1,3 @@
-// ignore_for_file: use_build_context_synchronously, avoid_print
-
 import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:windows_store_iap/windows_store_iap.dart';
@@ -20,6 +18,32 @@ class MyApp extends StatefulWidget {
 
 class _MyAppState extends State<MyApp> {
   final _windowsIapPlugin = WindowsStoreIap();
+  bool _busy = false;
+
+  Future<void> _run(
+    BuildContext context,
+    String operation,
+    Future<String> Function() action,
+  ) async {
+    if (_busy) return;
+    setState(() => _busy = true);
+
+    late final String message;
+    try {
+      message = await action();
+    } on PlatformException catch (error) {
+      message = '$operation failed (${error.code}): '
+          '${error.message ?? 'Microsoft Store error'}';
+    } on Object catch (error) {
+      message = '$operation failed: $error';
+    }
+
+    if (!context.mounted) return;
+    setState(() => _busy = false);
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(message)),
+    );
+  }
 
   @override
   Widget build(BuildContext context) {
@@ -34,72 +58,88 @@ class _MyAppState extends State<MyApp> {
               mainAxisSize: MainAxisSize.min,
               children: [
                 ElevatedButton(
-                    onPressed: () async {
-                      final result = await _windowsIapPlugin.checkPurchase(
-                        storeId: productStoreId,
-                      );
-                      if (!mounted) return;
-                      ScaffoldMessenger.of(context).showSnackBar(
-                        SnackBar(content: Text('checkPurchase: $result')),
-                      );
-                    },
+                    onPressed: _busy
+                        ? null
+                        : () => _run(context, 'checkPurchase', () async {
+                              final result =
+                                  await _windowsIapPlugin.checkPurchase(
+                                storeId: productStoreId,
+                              );
+                              return 'checkPurchase: $result';
+                            }),
                     child: const Text('checkPurchase')),
                 const SizedBox(height: 16),
                 ElevatedButton(
-                    onPressed: () async {
-                      final result =
-                          await _windowsIapPlugin.makePurchase(productStoreId);
-                      print('result is $result');
-                    },
+                    onPressed: _busy
+                        ? null
+                        : () => _run(context, 'makePurchase', () async {
+                              final result = await _windowsIapPlugin
+                                  .makePurchaseDetailed(productStoreId);
+                              final code = result.extendedErrorCode == null
+                                  ? ''
+                                  : ' (${result.extendedErrorCode})';
+                              return 'purchase: ${result.status.name}$code';
+                            }),
                     child: const Text('makePurchase')),
                 const SizedBox(height: 16),
                 ElevatedButton(
-                    onPressed: () async {
-                      try {
-                        final products = await _windowsIapPlugin.getProducts();
-                        print('products: $products');
-                      } on PlatformException catch (e) {
-                        print('error');
-                        print(e.toString());
-                      }
-                    },
+                    onPressed: _busy
+                        ? null
+                        : () => _run(context, 'getProducts', () async {
+                              final products =
+                                  await _windowsIapPlugin.getProducts();
+                              return 'products: ${products.length}';
+                            }),
                     child: const Text('getProducts')),
                 const SizedBox(height: 16),
                 ElevatedButton(
-                    onPressed: () async {
-                      final result = await _windowsIapPlugin.getAddonLicenses();
-                      print('licenses: $result');
-                    },
+                    onPressed: _busy
+                        ? null
+                        : () => _run(context, 'getAddonLicenses', () async {
+                              final result =
+                                  await _windowsIapPlugin.getAddonLicenses();
+                              return 'add-on licenses: ${result.length}';
+                            }),
                     child: const Text('getAddonLicenses')),
                 const SizedBox(height: 16),
                 ElevatedButton(
-                    onPressed: () async {
-                      final license = await _windowsIapPlugin.getAppLicense();
-                      print('app license: ${license.toJson()}');
-                    },
+                    onPressed: _busy
+                        ? null
+                        : () => _run(context, 'getAppLicense', () async {
+                              final license =
+                                  await _windowsIapPlugin.getAppLicense();
+                              return 'app active: ${license.isActive}, '
+                                  'add-ons: ${license.addOnLicenses.length}';
+                            }),
                     child: const Text('getAppLicense')),
                 const SizedBox(height: 16),
                 ElevatedButton(
-                  onPressed: () async {
-                    await inspectSubscription(productStoreId);
-                  },
+                  onPressed: _busy
+                      ? null
+                      : () => _run(context, 'inspectSubscription', () async {
+                            await inspectSubscription(productStoreId);
+                            return 'subscription inspection completed';
+                          }),
                   child: const Text('检查订阅'),
                 ),
                 const SizedBox(height: 16),
                 ElevatedButton(
-                  onPressed: () async {
-                    try {
-                      final status = await store.makePurchase(productStoreId);
-                      print('purchase status: $status');
-
-                      // 购买完成后重新读取许可证。
-                      await inspectSubscription(productStoreId);
-                    } on PlatformException catch (error) {
-                      print('code: ${error.code}');
-                      print('message: ${error.message}');
-                      print('details: ${error.details}');
-                    }
-                  },
+                  onPressed: _busy
+                      ? null
+                      : () => _run(context, '购买订阅', () async {
+                            final result = await store
+                                .makePurchaseDetailed(productStoreId);
+                            if (result.status ==
+                                    StorePurchaseStatus.succeeded ||
+                                result.status ==
+                                    StorePurchaseStatus.alreadyPurchased) {
+                              await inspectSubscription(productStoreId);
+                            }
+                            final code = result.extendedErrorCode == null
+                                ? ''
+                                : ' (${result.extendedErrorCode})';
+                            return 'purchase: ${result.status.name}$code';
+                          }),
                   child: const Text('购买订阅'),
                 )
               ],

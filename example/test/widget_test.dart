@@ -1,16 +1,16 @@
-// This is a basic Flutter widget test.
-//
-// To perform an interaction with a widget in your test, use the WidgetTester
-// utility in the flutter_test package. For example, you can send tap and scroll
-// gestures. You can also use WidgetTester to find child widgets in the widget
-// tree, read text, and verify that the values of widget properties are correct.
-
 import 'package:flutter_test/flutter_test.dart';
+import 'package:windows_store_iap_example/main.dart';
 
 void main() {
-  testWidgets('Verify Platform version', (WidgetTester tester) async {
-    // Build our app and trigger a frame.
+  testWidgets('shows Store operations', (tester) async {
+    await tester.pumpWidget(const MyApp());
 
-    // Verify that platform version is retrieved.
+    expect(find.text('checkPurchase'), findsOneWidget);
+    expect(find.text('makePurchase'), findsOneWidget);
+    expect(find.text('getProducts'), findsOneWidget);
+    expect(find.text('getAddonLicenses'), findsOneWidget);
+    expect(find.text('getAppLicense'), findsOneWidget);
+    expect(find.text('检查订阅'), findsOneWidget);
+    expect(find.text('购买订阅'), findsOneWidget);
   });
 }

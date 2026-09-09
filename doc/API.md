@@ -1,6 +1,6 @@
 # windows_store_iap API
 
-本文档对应 `windows_store_iap 0.1.0`。所有时间均以 UTC 表示；序列化后的时间字段使用 Unix epoch 毫秒。
+本文档对应 `windows_store_iap 0.2.1`。所有时间均以 UTC 表示；序列化后的时间字段使用 Unix epoch 毫秒。
 
 ## 导入和入口
 
@@ -37,6 +37,21 @@ Future<StorePurchaseStatus?> makePurchase(String storeId)
 | `null` | 原生端返回了当前版本不认识的状态值 |
 
 Flutter `PlatformException` 会保留原生 HRESULT 和错误信息，调用方应捕获并记录 `code`、`message`、`details`。
+
+### makePurchaseDetailed
+
+```dart
+Future<StorePurchaseDetails> makePurchaseDetailed(String storeId)
+```
+
+打开 Microsoft Store 购买界面，并同时返回 `status` 与可选的
+`extendedErrorCode`。当 Store 返回 `networkError`、`serverError` 等完成状态时，
+该状态不会被 HRESULT 覆盖；扩展 HRESULT 以 `0x80000000` 形式单独保留。
+StoreContext 初始化或通道调用本身失败时仍抛出 `PlatformException`。
+
+插件一次只允许一个购买界面。前一个购买尚未结束时再次调用
+`makePurchase` 或 `makePurchaseDetailed`，会抛出错误码为
+`purchase_in_progress` 的 `PlatformException`。
 
 ### getProducts
 
@@ -143,10 +158,11 @@ Future<StoreAppLicense> getAppLicense()
 
 ```dart
 try {
-  final status = await store.makePurchase(productStoreId);
-  // 根据 status 更新 UI；成功后重新读取许可证。
-} on PlatformException catch (error, stackTrace) {
-  // 将 error.code、error.message、error.details 和 stackTrace 发送到日志系统。
+  final result = await store.makePurchaseDetailed(productStoreId);
+  // 根据 result.status 更新 UI；成功后重新读取许可证。
+  // result.extendedErrorCode 可用于分类诊断。
+} on PlatformException catch (error) {
+  // 记录必要的 code/message；不要默认上传许可证扩展 JSON 或用户标识。
 }
 ```
 
@@ -166,7 +182,7 @@ try {
 
 ```yaml
 dependencies:
-  windows_store_iap: ^0.1.0
+  windows_store_iap: ^0.2.1
 ```
 
 ```dart

@@ -1,10 +1,5 @@
 #include "windows_iap_plugin.h"
 
-// This must be included before many other Windows headers.
-#include <windows.h>
-
-#include <flutter/method_channel.h>
-#include <flutter/plugin_registrar_windows.h>
 #include <flutter/standard_method_codec.h>
 
 #include <cstdio>
@@ -13,8 +8,8 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <utility>
 
-#include <shobjidl.h>
 #include <winrt/Windows.Foundation.Collections.h>
 #include <winrt/Windows.Services.Store.h>
 
@@ -30,7 +25,31 @@ namespace {
 constexpr int64_t kWinRtTicksPerMillisecond = 10000;
 constexpr int64_t kUnixEpochInWinRtTicks = 116444736000000000LL;
 
-HWND g_root_window = nullptr;
+enum class PurchaseResponseKind {
+  kStatusOnly,
+  kDetailed,
+};
+
+class PendingPurchaseReset final {
+ public:
+  explicit PendingPurchaseReset(std::shared_ptr<std::atomic_bool> pending)
+      : pending_(std::move(pending)) {}
+
+  ~PendingPurchaseReset() { Release(); }
+
+  void Release() {
+    if (pending_) {
+      pending_->store(false);
+      pending_.reset();
+    }
+  }
+
+  PendingPurchaseReset(const PendingPurchaseReset&) = delete;
+  PendingPurchaseReset& operator=(const PendingPurchaseReset&) = delete;
+
+ private:
+  std::shared_ptr<std::atomic_bool> pending_;
+};
 
 flutter::EncodableValue Key(const char* value) {
   return flutter::EncodableValue(std::string(value));
@@ -59,22 +78,15 @@ std::string ProductStoreIdFromSkuStoreId(const std::string& sku_store_id) {
                                         : sku_store_id.substr(0, separator);
 }
 
-StoreContext GetStore() {
-  StoreContext store = StoreContext::GetDefault();
-  if (g_root_window != nullptr) {
-    auto initialize_with_window = store.try_as<IInitializeWithWindow>();
-    if (initialize_with_window != nullptr) {
-      check_hresult(initialize_with_window->Initialize(g_root_window));
-    }
-  }
-  return store;
+std::string HResultCode(hresult code) {
+  char buffer[16] = {};
+  snprintf(buffer, sizeof(buffer), "0x%08X",
+           static_cast<unsigned int>(code.value));
+  return std::string(buffer);
 }
 
 std::string HResultCode(const hresult_error& error) {
-  char buffer[16] = {};
-  snprintf(buffer, sizeof(buffer), "0x%08X",
-           static_cast<unsigned int>(error.code().value));
-  return std::string(buffer);
+  return HResultCode(error.code());
 }
 
 std::string HResultMessage(const hresult_error& error) {
@@ -187,18 +199,22 @@ flutter::EncodableMap SkuToMap(const StoreSku& sku) {
   value[Key("price")] = PriceToMap(sku.Price());
   value[Key("extendedJsonData")] = to_string(sku.ExtendedJsonData());
 
-  if (sku.IsSubscription() && sku.SubscriptionInfo() != nullptr) {
+  const auto subscription_info = sku.SubscriptionInfo();
+  if (sku.IsSubscription() && subscription_info != nullptr) {
     value[Key("subscriptionInfo")] =
-        SubscriptionInfoToMap(sku.SubscriptionInfo());
+        SubscriptionInfoToMap(subscription_info);
   }
-  if (sku.CollectionData() != nullptr) {
+  const auto collection_data = sku.CollectionData();
+  if (collection_data != nullptr) {
     value[Key("collectionData")] =
-        CollectionDataToMap(sku.CollectionData());
+        CollectionDataToMap(collection_data);
   }
 
   flutter::EncodableList availabilities;
   for (const StoreAvailability& availability : sku.Availabilities()) {
-    availabilities.emplace_back(AvailabilityToMap(availability));
+    if (availability != nullptr) {
+      availabilities.emplace_back(AvailabilityToMap(availability));
+    }
   }
   value[Key("availabilities")] = availabilities;
   return value;
@@ -206,21 +222,27 @@ flutter::EncodableMap SkuToMap(const StoreSku& sku) {
 
 flutter::EncodableMap ProductToMap(const StoreProduct& product) {
   flutter::EncodableMap value;
+  const auto price = product.Price();
   value[Key("title")] = to_string(product.Title());
   value[Key("description")] = to_string(product.Description());
-  value[Key("price")] = to_string(product.Price().FormattedPrice());
+  value[Key("price")] =
+      price == nullptr ? std::string() : to_string(price.FormattedPrice());
   value[Key("inCollection")] = product.IsInUserCollection();
   value[Key("productKind")] = to_string(product.ProductKind());
   value[Key("storeId")] = to_string(product.StoreId());
   value[Key("inAppOfferToken")] = to_string(product.InAppOfferToken());
   value[Key("language")] = to_string(product.Language());
-  value[Key("storePrice")] = PriceToMap(product.Price());
+  if (price != nullptr) {
+    value[Key("storePrice")] = PriceToMap(price);
+  }
   value[Key("extendedJsonData")] =
       to_string(product.ExtendedJsonData());
 
   flutter::EncodableList skus;
   for (const StoreSku& sku : product.Skus()) {
-    skus.emplace_back(SkuToMap(sku));
+    if (sku != nullptr) {
+      skus.emplace_back(SkuToMap(sku));
+    }
   }
   value[Key("skus")] = skus;
   return value;
@@ -250,10 +272,16 @@ flutter::EncodableMap LicenseToMap(const StoreLicense& license) {
 flutter::EncodableMap AddOnLicensesToMap(
     const StoreAppLicense& app_license) {
   flutter::EncodableMap licenses;
-  for (const IKeyValuePair<hstring, StoreLicense>& entry :
-       app_license.AddOnLicenses()) {
-    licenses[flutter::EncodableValue(to_string(entry.Key()))] =
-        LicenseToMap(entry.Value());
+  const auto add_on_licenses = app_license.AddOnLicenses();
+  if (add_on_licenses == nullptr) {
+    return licenses;
+  }
+
+  for (const IKeyValuePair<hstring, StoreLicense>& entry : add_on_licenses) {
+    if (entry.Value() != nullptr) {
+      licenses[flutter::EncodableValue(to_string(entry.Key()))] =
+          LicenseToMap(entry.Value());
+    }
   }
   return licenses;
 }
@@ -293,41 +321,69 @@ bool LicenseMatchesStoreId(const std::string& collection_key,
 }
 
 foundation::IAsyncAction MakePurchase(
-    const hstring& store_id,
+    std::shared_ptr<StoreApi> store,
+    hstring store_id,
+    PurchaseResponseKind response_kind,
+    std::shared_ptr<std::atomic_bool> purchase_pending,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
+  PendingPurchaseReset reset(std::move(purchase_pending));
   try {
     const StorePurchaseResult purchase =
-        co_await GetStore().RequestPurchaseAsync(store_id);
-    if (purchase.ExtendedError().value != S_OK) {
-      result->Error(std::to_string(purchase.ExtendedError().value),
-                    "Microsoft Store rejected the purchase request.");
+        co_await store->RequestPurchaseAsync(std::move(store_id));
+    if (purchase == nullptr) {
+      throw hresult_error(E_UNEXPECTED,
+                          L"Microsoft Store returned no purchase result.");
+    }
+
+    const auto status = static_cast<int32_t>(purchase.Status());
+    if (response_kind == PurchaseResponseKind::kStatusOnly) {
+      reset.Release();
+      result->Success(flutter::EncodableValue(status));
       co_return;
     }
 
-    result->Success(flutter::EncodableValue(
-        static_cast<int32_t>(purchase.Status())));
+    const auto extended_error = purchase.ExtendedError();
+    flutter::EncodableMap details;
+    details[Key("status")] = status;
+    details[Key("extendedErrorCode")] =
+        extended_error.value == S_OK
+            ? flutter::EncodableValue()
+            : flutter::EncodableValue(HResultCode(extended_error));
+    reset.Release();
+    result->Success(flutter::EncodableValue(details));
   } catch (const hresult_error& error) {
+    reset.Release();
     SendHResultError(error, result.get());
   } catch (const std::exception& error) {
+    reset.Release();
     result->Error("native_error", error.what());
   }
 }
 
 foundation::IAsyncAction GetProducts(
+    std::shared_ptr<StoreApi> store,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   try {
-    const StoreProductQueryResult query =
-        co_await GetStore().GetAssociatedStoreProductsAsync(
-            {L"Consumable", L"Durable", L"UnmanagedConsumable"});
+    const StoreProductQueryResult query = co_await store->GetProductsAsync();
+    if (query == nullptr) {
+      throw hresult_error(E_UNEXPECTED,
+                          L"Microsoft Store returned no product result.");
+    }
     if (query.ExtendedError().value != S_OK) {
-      result->Error(std::to_string(query.ExtendedError().value),
+      result->Error(HResultCode(query.ExtendedError()),
                     "Unable to load Microsoft Store products.");
       co_return;
     }
 
     flutter::EncodableList products;
-    for (const IKeyValuePair<hstring, StoreProduct>& entry : query.Products()) {
-      products.emplace_back(ProductToMap(entry.Value()));
+    const auto query_products = query.Products();
+    if (query_products != nullptr) {
+      for (const IKeyValuePair<hstring, StoreProduct>& entry :
+           query_products) {
+        if (entry.Value() != nullptr) {
+          products.emplace_back(ProductToMap(entry.Value()));
+        }
+      }
     }
     result->Success(flutter::EncodableValue(products));
   } catch (const hresult_error& error) {
@@ -338,9 +394,14 @@ foundation::IAsyncAction GetProducts(
 }
 
 foundation::IAsyncAction GetAppLicense(
+    std::shared_ptr<StoreApi> store,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   try {
-    const StoreAppLicense app_license = co_await GetStore().GetAppLicenseAsync();
+    const StoreAppLicense app_license = co_await store->GetAppLicenseAsync();
+    if (app_license == nullptr) {
+      throw hresult_error(E_UNEXPECTED,
+                          L"Microsoft Store returned no app license.");
+    }
     result->Success(flutter::EncodableValue(AppLicenseToMap(app_license)));
   } catch (const hresult_error& error) {
     SendHResultError(error, result.get());
@@ -350,9 +411,14 @@ foundation::IAsyncAction GetAppLicense(
 }
 
 foundation::IAsyncAction GetAddonLicenses(
+    std::shared_ptr<StoreApi> store,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   try {
-    const StoreAppLicense app_license = co_await GetStore().GetAppLicenseAsync();
+    const StoreAppLicense app_license = co_await store->GetAppLicenseAsync();
+    if (app_license == nullptr) {
+      throw hresult_error(E_UNEXPECTED,
+                          L"Microsoft Store returned no app license.");
+    }
     result->Success(
         flutter::EncodableValue(AddOnLicensesToMap(app_license)));
   } catch (const hresult_error& error) {
@@ -363,24 +429,31 @@ foundation::IAsyncAction GetAddonLicenses(
 }
 
 foundation::IAsyncAction CheckPurchase(
-    const std::string& store_id,
+    std::shared_ptr<StoreApi> store,
+    std::string store_id,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   try {
-    const StoreAppLicense app_license = co_await GetStore().GetAppLicenseAsync();
-    if (!app_license.IsActive()) {
+    const StoreAppLicense app_license = co_await store->GetAppLicenseAsync();
+    if (app_license == nullptr || !app_license.IsActive()) {
       result->Success(flutter::EncodableValue(false));
       co_return;
     }
 
-    for (const IKeyValuePair<hstring, StoreLicense>& entry :
-         app_license.AddOnLicenses()) {
-      const StoreLicense license = entry.Value();
-      const bool matches =
-          store_id.empty() ||
-          LicenseMatchesStoreId(to_string(entry.Key()), license, store_id);
-      if (matches && IsNotExpired(license.ExpirationDate())) {
-        result->Success(flutter::EncodableValue(true));
-        co_return;
+    const auto add_on_licenses = app_license.AddOnLicenses();
+    if (add_on_licenses != nullptr) {
+      for (const IKeyValuePair<hstring, StoreLicense>& entry :
+           add_on_licenses) {
+        const StoreLicense license = entry.Value();
+        if (license == nullptr) {
+          continue;
+        }
+        const bool matches =
+            store_id.empty() ||
+            LicenseMatchesStoreId(to_string(entry.Key()), license, store_id);
+        if (matches && IsNotExpired(license.ExpirationDate())) {
+          result->Success(flutter::EncodableValue(true));
+          co_return;
+        }
       }
     }
     result->Success(flutter::EncodableValue(false));
@@ -396,47 +469,134 @@ foundation::IAsyncAction CheckPurchase(
 // static
 void WindowsIapPlugin::RegisterWithRegistrar(
     flutter::PluginRegistrarWindows* registrar) {
-  g_root_window =
-      ::GetAncestor(registrar->GetView()->GetNativeWindow(), GA_ROOT);
+  if (registrar == nullptr) {
+    return;
+  }
 
-  auto channel =
-      std::make_unique<flutter::MethodChannel<flutter::EncodableValue>>(
-          registrar->messenger(), "windows_store_iap",
-          &flutter::StandardMethodCodec::GetInstance());
-
-  auto plugin = std::make_unique<WindowsIapPlugin>();
-  channel->SetMethodCallHandler(
-      [plugin_pointer = plugin.get()](const auto& call, auto result) {
-        plugin_pointer->HandleMethodCall(call, std::move(result));
-      });
+  auto view_window = [registrar]() -> HWND {
+    auto* view = registrar->GetView();
+    return view == nullptr ? nullptr : view->GetNativeWindow();
+  };
+  auto plugin = std::make_unique<WindowsIapPlugin>(
+      registrar->messenger(), std::move(view_window));
   registrar->AddPlugin(std::move(plugin));
 }
 
-WindowsIapPlugin::WindowsIapPlugin() = default;
-WindowsIapPlugin::~WindowsIapPlugin() = default;
+WindowsIapPlugin::WindowsIapPlugin(flutter::BinaryMessenger* messenger,
+                                   std::function<HWND()> view_window,
+                                   StoreApiFactory store_factory)
+    : channel_(
+          std::make_unique<
+              flutter::MethodChannel<flutter::EncodableValue>>(
+              messenger, "windows_store_iap",
+              &flutter::StandardMethodCodec::GetInstance())),
+      view_window_(std::move(view_window)),
+      store_factory_(std::move(store_factory)),
+      platform_thread_(::GetCurrentThreadId()),
+      purchase_pending_(std::make_shared<std::atomic_bool>(false)) {
+  channel_->SetMethodCallHandler(
+      [this](const auto& call, auto result) {
+        HandleMethodCall(call, std::move(result));
+      });
+}
+
+WindowsIapPlugin::~WindowsIapPlugin() {
+  channel_->SetMethodCallHandler(nullptr);
+}
+
+std::shared_ptr<StoreApi> WindowsIapPlugin::CreateStoreForRequest() const {
+  if (::GetCurrentThreadId() != platform_thread_) {
+    throw hresult_error(
+        RPC_E_WRONG_THREAD,
+        L"Microsoft Store calls must start on the Flutter platform thread.");
+  }
+  if (!view_window_) {
+    throw hresult_error(
+        HRESULT_FROM_WIN32(ERROR_INVALID_WINDOW_HANDLE),
+        L"The Flutter view is unavailable.");
+  }
+
+  const HWND root_window = ResolveStoreWindow(view_window_());
+  if (root_window == nullptr) {
+    throw hresult_error(
+        HRESULT_FROM_WIN32(ERROR_INVALID_WINDOW_HANDLE),
+        L"The Flutter view does not have a valid native window.");
+  }
+  if (!store_factory_) {
+    throw hresult_error(E_UNEXPECTED,
+                        L"The Microsoft Store client is unavailable.");
+  }
+
+  auto store = store_factory_(root_window);
+  if (!store) {
+    throw hresult_error(E_UNEXPECTED,
+                        L"The Microsoft Store client is unavailable.");
+  }
+  return store;
+}
 
 void WindowsIapPlugin::HandleMethodCall(
     const flutter::MethodCall<flutter::EncodableValue>& method_call,
     std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result) {
   const auto& method = method_call.method_name();
-  if (method == "makePurchase") {
+  if (method != "makePurchase" && method != "makePurchaseDetailed" &&
+      method != "getProducts" && method != "checkPurchase" &&
+      method != "getAddonLicenses" && method != "getAppLicense") {
+    result->NotImplemented();
+    return;
+  }
+
+  if (method == "makePurchase" || method == "makePurchaseDetailed") {
     const auto store_id = StringArgument(method_call, "storeId");
     if (!store_id.has_value() || store_id->empty()) {
       result->Error("invalid_arguments", "storeId must not be empty.");
       return;
     }
-    MakePurchase(to_hstring(*store_id), std::move(result));
-  } else if (method == "getProducts") {
-    GetProducts(std::move(result));
+    if (purchase_pending_->exchange(true)) {
+      result->Error("purchase_in_progress",
+                    "A Microsoft Store purchase is already in progress.");
+      return;
+    }
+
+    try {
+      auto store = CreateStoreForRequest();
+      MakePurchase(
+          std::move(store), to_hstring(*store_id),
+          method == "makePurchaseDetailed"
+              ? PurchaseResponseKind::kDetailed
+              : PurchaseResponseKind::kStatusOnly,
+          purchase_pending_, std::move(result));
+    } catch (const hresult_error& error) {
+      purchase_pending_->store(false);
+      SendHResultError(error, result.get());
+    } catch (const std::exception& error) {
+      purchase_pending_->store(false);
+      result->Error("native_error", error.what());
+    }
+    return;
+  }
+
+  std::shared_ptr<StoreApi> store;
+  try {
+    store = CreateStoreForRequest();
+  } catch (const hresult_error& error) {
+    SendHResultError(error, result.get());
+    return;
+  } catch (const std::exception& error) {
+    result->Error("native_error", error.what());
+    return;
+  }
+
+  if (method == "getProducts") {
+    GetProducts(std::move(store), std::move(result));
   } else if (method == "checkPurchase") {
     const auto store_id = StringArgument(method_call, "storeId");
-    CheckPurchase(store_id.value_or(""), std::move(result));
+    CheckPurchase(std::move(store), store_id.value_or(""),
+                  std::move(result));
   } else if (method == "getAddonLicenses") {
-    GetAddonLicenses(std::move(result));
+    GetAddonLicenses(std::move(store), std::move(result));
   } else if (method == "getAppLicense") {
-    GetAppLicense(std::move(result));
-  } else {
-    result->NotImplemented();
+    GetAppLicense(std::move(store), std::move(result));
   }
 }
 

@@ -8,6 +8,8 @@ library windows_iap;
 
 import 'dart:io';
 
+import 'package:flutter/services.dart';
+
 import 'models/product.dart';
 import 'models/store_app_license.dart';
 import 'models/store_license.dart';
@@ -40,6 +42,29 @@ enum StorePurchaseStatus {
   serverError,
 }
 
+/// Full result returned after the Microsoft Store purchase UI closes.
+class StorePurchaseDetails {
+  /// Store-defined outcome of the purchase request.
+  final StorePurchaseStatus status;
+
+  /// HRESULT reported by Store when it provides additional failure detail.
+  ///
+  /// The value is formatted as an eight-digit hexadecimal code, such as
+  /// `0x80072EE7`. It can be present for non-success statuses such as
+  /// [StorePurchaseStatus.networkError] or [StorePurchaseStatus.serverError].
+  final String? extendedErrorCode;
+
+  /// Creates a purchase result.
+  const StorePurchaseDetails({
+    required this.status,
+    this.extendedErrorCode,
+  });
+
+  /// Whether Microsoft Store supplied an additional HRESULT.
+  bool get hasExtendedError =>
+      extendedErrorCode != null && extendedErrorCode!.isNotEmpty;
+}
+
 /// Client API for Microsoft Store purchases and license information.
 ///
 /// This API can only be called from a packaged Windows application associated
@@ -64,6 +89,20 @@ class WindowsIap {
       throw ArgumentError.value(storeId, 'storeId', 'Must not be empty.');
     }
     return WindowsIapPlatform.instance.makePurchase(storeId.trim());
+  }
+
+  /// Opens the Microsoft Store purchase UI and returns status plus any
+  /// Store-provided extended error code.
+  ///
+  /// Use this method when the application needs to distinguish a Store status
+  /// from its HRESULT diagnostics. Transport and initialization failures are
+  /// still reported as [PlatformException] by Flutter.
+  Future<StorePurchaseDetails> makePurchaseDetailed(String storeId) {
+    _ensureWindows();
+    if (storeId.trim().isEmpty) {
+      throw ArgumentError.value(storeId, 'storeId', 'Must not be empty.');
+    }
+    return WindowsIapPlatform.instance.makePurchaseDetailed(storeId.trim());
   }
 
   /// Gets the associated Microsoft Store products, including SKU,

@@ -1,3 +1,12 @@
+## 0.2.1
+
+- Fix a native use-after-lifetime in the suspended entitlement check.
+- Bind each StoreContext to the current plugin instance and validated window.
+- Return purchase status consistently and add detailed HRESULT diagnostics.
+- Reject overlapping purchase UI requests.
+- Add release PDB generation and native regression tests.
+- Harden the example runner, error handling, logging, and package metadata.
+
 ## 0.2.0
 - Initial release fo windwos_store_iap 0.2.0
 - Fix the bug.

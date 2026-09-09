@@ -40,6 +40,8 @@ endif()
 
 # Any new source files that you add to the plugin should be added here.
 list(APPEND PLUGIN_SOURCES
+  "store_api.cpp"
+  "store_api.h"
   "windows_iap_plugin.cpp"
   "windows_iap_plugin.h"
 )
@@ -63,6 +65,20 @@ apply_standard_settings(${PLUGIN_NAME})
 set_target_properties(${PLUGIN_NAME} PROPERTIES
   CXX_VISIBILITY_PRESET hidden)
 target_compile_definitions(${PLUGIN_NAME} PRIVATE FLUTTER_PLUGIN_IMPL)
+target_compile_definitions(${PLUGIN_NAME} PRIVATE NOMINMAX WIN32_LEAN_AND_MEAN)
+target_compile_options(${PLUGIN_NAME} PRIVATE
+  /utf-8
+  $<$<CONFIG:Release>:/Zi>
+  $<$<CONFIG:Profile>:/Zi>
+)
+target_link_options(${PLUGIN_NAME} PRIVATE
+  $<$<CONFIG:Release>:/DEBUG:FULL>
+  $<$<CONFIG:Release>:/OPT:REF>
+  $<$<CONFIG:Release>:/OPT:ICF>
+  $<$<CONFIG:Profile>:/DEBUG:FULL>
+  $<$<CONFIG:Profile>:/OPT:REF>
+  $<$<CONFIG:Profile>:/OPT:ICF>
+)
 
 ################ NuGet import begin ################
 set_target_properties(${PLUGIN_NAME} PROPERTIES VS_PROJECT_IMPORT
@@ -87,3 +103,36 @@ set(windows_store_iap_bundled_libraries
   ""
   PARENT_SCOPE
 )
+
+option(WINDOWS_STORE_IAP_BUILD_TESTS
+  "Build windows_store_iap native regression tests" OFF)
+if(WINDOWS_STORE_IAP_BUILD_TESTS)
+  enable_testing()
+  add_executable(windows_store_iap_plugin_tests
+    "test/windows_iap_plugin_test.cpp"
+    ${PLUGIN_SOURCES}
+  )
+  apply_standard_settings(windows_store_iap_plugin_tests)
+  target_compile_definitions(windows_store_iap_plugin_tests PRIVATE
+    NOMINMAX WIN32_LEAN_AND_MEAN)
+  target_compile_options(windows_store_iap_plugin_tests PRIVATE /utf-8)
+  target_include_directories(windows_store_iap_plugin_tests PRIVATE
+    "${CMAKE_CURRENT_SOURCE_DIR}"
+    "${CMAKE_CURRENT_SOURCE_DIR}/include")
+  set_target_properties(windows_store_iap_plugin_tests PROPERTIES
+    VS_PROJECT_IMPORT
+      ${CMAKE_BINARY_DIR}/packages/Microsoft.Windows.CppWinRT.${CPPWINRT_VERSION}/build/native/Microsoft.Windows.CppWinRT.props
+  )
+  target_link_libraries(windows_store_iap_plugin_tests PRIVATE
+    flutter
+    flutter_wrapper_plugin
+    ${CMAKE_BINARY_DIR}/packages/Microsoft.Windows.CppWinRT.${CPPWINRT_VERSION}/build/native/Microsoft.Windows.CppWinRT.targets
+  )
+  add_custom_command(TARGET windows_store_iap_plugin_tests POST_BUILD
+    COMMAND ${CMAKE_COMMAND} -E copy_if_different
+      "${FLUTTER_LIBRARY}"
+      $<TARGET_FILE_DIR:windows_store_iap_plugin_tests>
+  )
+  add_test(NAME windows_store_iap_plugin_tests
+    COMMAND windows_store_iap_plugin_tests)
+endif()

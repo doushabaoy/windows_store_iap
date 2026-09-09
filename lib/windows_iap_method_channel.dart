@@ -31,6 +31,33 @@ class MethodChannelWindowsIap extends WindowsIapPlatform {
   }
 
   @override
+  Future<StorePurchaseDetails> makePurchaseDetailed(String storeId) async {
+    final result = await methodChannel.invokeMethod<dynamic>(
+      'makePurchaseDetailed',
+      {'storeId': storeId},
+    );
+    final value = asStringKeyedMap(result);
+    final statusValue = value['status'];
+    if (statusValue is! int ||
+        statusValue < 0 ||
+        statusValue >= StorePurchaseStatus.values.length) {
+      throw const FormatException(
+        'Microsoft Store returned an invalid purchase status.',
+      );
+    }
+    final extendedErrorCode = value['extendedErrorCode'];
+    if (extendedErrorCode != null && extendedErrorCode is! String) {
+      throw const FormatException(
+        'Microsoft Store returned an invalid extended error code.',
+      );
+    }
+    return StorePurchaseDetails(
+      status: StorePurchaseStatus.values[statusValue],
+      extendedErrorCode: extendedErrorCode as String?,
+    );
+  }
+
+  @override
   Future<List<Product>> getProducts() async {
     final result = await methodChannel.invokeMethod<dynamic>('getProducts');
     if (result == null) return const [];

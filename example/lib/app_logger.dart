@@ -1,5 +1,4 @@
-import 'dart:convert';
-
+import 'package:flutter/foundation.dart';
 import 'package:flutter/services.dart';
 import 'package:windows_store_iap/windows_store_iap.dart';
 
@@ -9,41 +8,43 @@ Future<void> inspectSubscription(String storeId) async {
   try {
     final products = await store.getProducts();
 
-    print('======= PRODUCTS =======');
+    debugPrint('======= PRODUCTS =======');
     for (final product in products) {
-      print(const JsonEncoder.withIndent('  ').convert(product.toJson()));
+      debugPrint(
+        'storeId=${product.storeId}, title=${product.title}, '
+        'price=${product.price}, subscription=${product.isSubscription}',
+      );
     }
 
     final appLicense = await store.getAppLicense();
 
-    print('======= APP LICENSE =======');
-    print(
-      const JsonEncoder.withIndent('  ').convert(appLicense.toJson()),
+    debugPrint('======= APP LICENSE =======');
+    debugPrint(
+      'active=${appLicense.isActive}, trial=${appLicense.isTrial}, '
+      'expiresAt=${appLicense.expiresAt}, '
+      'addOnCount=${appLicense.addOnLicenses.length}',
     );
 
     final licenses = await store.getAddonLicenses();
 
-    print('======= ADD-ON LICENSES =======');
+    debugPrint('======= ADD-ON LICENSES =======');
     for (final entry in licenses.entries) {
-      print('collectionKey: ${entry.key}');
-      print(
-        const JsonEncoder.withIndent('  ').convert(entry.value.toJson()),
-      );
-      print('expiresAt: ${entry.value.expiresAt}');
-      print(
-        'currentlyEntitled: ${entry.value.isCurrentlyEntitled()}',
+      debugPrint(
+        'productStoreId=${entry.value.productStoreId}, '
+        'expiresAt=${entry.value.expiresAt}, '
+        'currentlyEntitled=${entry.value.isCurrentlyEntitled()}',
       );
     }
 
     final entitled = await store.checkPurchase(storeId: storeId);
-    print('======= RESULT =======');
-    print('storeId: $storeId');
-    print('entitled: $entitled');
-  } on PlatformException catch (error, stackTrace) {
-    print('Microsoft Store 调用失败');
-    print('code: ${error.code}');
-    print('message: ${error.message}');
-    print('details: ${error.details}');
-    print(stackTrace);
+    debugPrint('======= RESULT =======');
+    debugPrint('storeId=$storeId, entitled=$entitled');
+  } on PlatformException catch (error) {
+    debugPrint(
+      'Microsoft Store call failed: ${error.code}: '
+      '${error.message ?? 'unknown error'}',
+    );
+  } on Object catch (error) {
+    debugPrint('Subscription inspection failed: $error');
   }
 }

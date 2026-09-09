@@ -1,1 +1,2 @@
-flutter pub run build_runner watch --delete-conflicting-outputs --use-polling-watcher
+@echo off
+flutter test

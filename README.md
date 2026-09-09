@@ -8,7 +8,7 @@
 
 ```yaml
 dependencies:
-  windows_store_iap: ^0.1.0
+  windows_store_iap: ^0.2.1
 ```
 
 ```dart
@@ -24,7 +24,7 @@ import 'package:windows_store_iap/windows_store_iap.dart';
 - 获取应用许可证、Add-on 许可证、试用信息和 UTC 到期时间。
 - 使用 AddOnLicenses 存在性和 ExpirationDate 判断客户端订阅权益。
 - MethodChannel 使用结构化数据，避免手工拼接 JSON 导致转义或解析错误。
-- 提供 `makePurchase`、`getProducts`、`checkPurchase`、`getAddonLicenses`、`getAppLicense` API。
+- 提供 `makePurchase`、`makePurchaseDetailed`、`getProducts`、`checkPurchase`、`getAddonLicenses`、`getAppLicense` API。
 - 保留 `WindowsIap` 兼容类，并为新项目提供 `WindowsStoreIap` 入口。
 
 ## 订阅语义
