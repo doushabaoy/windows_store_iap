@@ -1,12 +1,31 @@
 # windows_store_iap 0.2.0 源码审查
 
 审查日期：2026-09-09。原始源码基线：`8c3aa5d`。随后按审查结果完成
-0.2.1 修复；本文后面的发现保留原始代码位置和论证，供追踪问题来源。
+0.2.1 修复。2026-09-10 又根据新的带 RVA 堆栈完成 0.2.2 补充修复；
+本文后面的发现保留原始代码位置和论证，供追踪问题来源。
 
 原始结论：发现两个具有明确触发条件的原生内存安全缺陷，以及窗口归属、
 购买结果契约、发布符号和测试覆盖方面的问题。仅凭
 `ACCESS_VIOLATION_c0000005_windows_store_iap_plugin.dll!Unknown`，尚不能把
 某一次线上崩溃归因到具体行。
+
+## 0.2.2 补充修复
+
+新的 Debug 崩溃堆栈显示 `EXCEPTION_ACCESS_VIOLATION_READ / 0x1e8`，顶部为
+`flutter_windows+0x14f37`，其后连续出现插件 RVA。使用与 0.2.1 DLL 匹配的
+PDB 还原后，`0x81e24` 落到
+`flutter::BinaryMessengerImpl::SetMessageHandler` 的注销分支，其他插件帧落到
+该分支内的 handler map 擦除和字符串访问。调用源是插件析构函数中的
+`channel_->SetMethodCallHandler(nullptr)`。
+
+Flutter registrar 会先销毁其拥有的插件，随后销毁 `BinaryMessenger`；引擎销毁
+期间从插件析构函数重新进入原生 messenger 会访问正在拆除的 registrar。0.2.2
+移除了析构阶段的主动注销，让 registrar 按既定顺序销毁 handler，并新增
+`PluginDestructionDoesNotTouchMessenger` 原生回归测试。
+
+0.2.2 复核：CodeGraph 索引更新完成；6 个原生回归测试、12 个 Dart 测试和
+1 个示例 Widget 测试全部通过，Flutter analyze 零诊断，Windows Debug 与
+Release 构建均成功。
 
 ## 0.2.1 修复后复核
 

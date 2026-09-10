@@ -1,3 +1,10 @@
+## 0.2.2
+
+- Fix a shutdown-time access violation caused by unregistering the MethodChannel
+  after Flutter had started destroying the native plugin registrar.
+- Add a native regression test that prevents plugin destruction from touching
+  the messenger.
+
 ## 0.2.1
 
 - Fix a native use-after-lifetime in the suspended entitlement check.

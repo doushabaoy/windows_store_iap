@@ -500,9 +500,12 @@ WindowsIapPlugin::WindowsIapPlugin(flutter::BinaryMessenger* messenger,
       });
 }
 
-WindowsIapPlugin::~WindowsIapPlugin() {
-  channel_->SetMethodCallHandler(nullptr);
-}
+// The registrar destroys owned plugins while it is tearing down the engine.
+// MethodChannel destruction does not unregister its handler, and the registrar
+// destroys the BinaryMessenger immediately after the plugins. Calling
+// SetMethodCallHandler here can therefore re-enter a messenger whose native
+// registrar is already being destroyed.
+WindowsIapPlugin::~WindowsIapPlugin() = default;
 
 std::shared_ptr<StoreApi> WindowsIapPlugin::CreateStoreForRequest() const {
   if (::GetCurrentThreadId() != platform_thread_) {

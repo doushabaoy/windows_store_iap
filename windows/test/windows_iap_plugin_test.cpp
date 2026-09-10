@@ -81,9 +81,19 @@ class TestBinaryMessenger final : public flutter::BinaryMessenger {
 
   void SetMessageHandler(const std::string& channel,
                          flutter::BinaryMessageHandler handler) override {
+    if (reject_handler_changes_) {
+      handler_changed_while_rejected_ = true;
+      return;
+    }
     if (channel == "windows_store_iap") {
       handler_ = std::move(handler);
     }
+  }
+
+  void RejectFurtherHandlerChanges() { reject_handler_changes_ = true; }
+
+  bool handler_changed_while_rejected() const {
+    return handler_changed_while_rejected_;
   }
 
   std::future<Response> Invoke(const std::string& method,
@@ -117,6 +127,8 @@ class TestBinaryMessenger final : public flutter::BinaryMessenger {
 
  private:
   flutter::BinaryMessageHandler handler_;
+  bool reject_handler_changes_ = false;
+  bool handler_changed_while_rejected_ = false;
 };
 
 struct FakeStoreLicense
@@ -299,6 +311,19 @@ bool NoViewReturnsAnErrorWithoutCreatingStore() {
   return true;
 }
 
+bool PluginDestructionDoesNotTouchMessenger() {
+  TestBinaryMessenger messenger;
+  {
+    WindowsIapPlugin plugin(
+        &messenger, [] { return static_cast<HWND>(nullptr); },
+        [](HWND) { return std::shared_ptr<StoreApi>(); });
+    messenger.RejectFurtherHandlerChanges();
+  }
+
+  TEST_CHECK(!messenger.handler_changed_while_rejected());
+  return true;
+}
+
 bool PluginInstancesUseTheirOwnWindows() {
   TestWindow first_window;
   TestWindow second_window;
@@ -433,6 +458,8 @@ int main() {
   const std::pair<const char*, bool (*)()> tests[] = {
       {"NoViewReturnsAnErrorWithoutCreatingStore",
        NoViewReturnsAnErrorWithoutCreatingStore},
+      {"PluginDestructionDoesNotTouchMessenger",
+       PluginDestructionDoesNotTouchMessenger},
       {"PluginInstancesUseTheirOwnWindows",
        PluginInstancesUseTheirOwnWindows},
       {"CheckPurchaseOwnsStoreIdAcrossSuspension",
