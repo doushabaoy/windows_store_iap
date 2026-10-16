@@ -1,3 +1,10 @@
+## 0.2.4
+
+- Return a structured error for missing native SKU/availability prices and
+  collections instead of dereferencing a null WinRT interface.
+- Add native catalog serialization tests covering nested prices, subscriptions,
+  collection data, missing values, valid empty lists, and query HRESULTs.
+
 ## 0.2.3
 
 - Track pending native Store requests and cancel them when the plugin shuts down.

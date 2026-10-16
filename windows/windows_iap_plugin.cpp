@@ -123,6 +123,9 @@ std::optional<std::string> StringArgument(
 }
 
 flutter::EncodableMap PriceToMap(const StorePrice& price) {
+  if (price == nullptr) {
+    throw hresult_error(E_UNEXPECTED, L"Microsoft Store returned no price.");
+  }
   flutter::EncodableMap value;
   value[Key("currencyCode")] = to_string(price.CurrencyCode());
   value[Key("formattedBasePrice")] = to_string(price.FormattedBasePrice());
@@ -213,7 +216,12 @@ flutter::EncodableMap SkuToMap(const StoreSku& sku) {
   }
 
   flutter::EncodableList availabilities;
-  for (const StoreAvailability& availability : sku.Availabilities()) {
+  const auto store_availabilities = sku.Availabilities();
+  if (store_availabilities == nullptr) {
+    throw hresult_error(E_UNEXPECTED,
+                        L"Microsoft Store returned no availability collection.");
+  }
+  for (const StoreAvailability& availability : store_availabilities) {
     if (availability != nullptr) {
       availabilities.emplace_back(AvailabilityToMap(availability));
     }
@@ -241,7 +249,12 @@ flutter::EncodableMap ProductToMap(const StoreProduct& product) {
       to_string(product.ExtendedJsonData());
 
   flutter::EncodableList skus;
-  for (const StoreSku& sku : product.Skus()) {
+  const auto store_skus = product.Skus();
+  if (store_skus == nullptr) {
+    throw hresult_error(E_UNEXPECTED,
+                        L"Microsoft Store returned no SKU collection.");
+  }
+  for (const StoreSku& sku : store_skus) {
     if (sku != nullptr) {
       skus.emplace_back(SkuToMap(sku));
     }

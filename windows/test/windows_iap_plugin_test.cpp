@@ -14,12 +14,16 @@
 #include <string>
 #include <utility>
 
+#include "store_catalog_fakes.h"
+
 namespace {
 
 using flutter::EncodableMap;
 using flutter::EncodableValue;
 using windows_iap::StoreApi;
 using windows_iap::WindowsIapPlugin;
+using windows_iap::testing::CatalogShape;
+using windows_iap::testing::CatalogStoreApi;
 using namespace std::chrono_literals;
 using namespace winrt;
 using namespace winrt::Windows::Foundation;
@@ -515,6 +519,87 @@ bool NullAsyncOperationsReturnErrorsInsteadOfDereferencingNull() {
   return true;
 }
 
+Response ReadCatalog(CatalogShape shape) {
+  auto store = std::make_shared<CatalogStoreApi>(shape);
+  TestWindow window;
+  TestBinaryMessenger messenger;
+  WindowsIapPlugin plugin(
+      &messenger, [&window] { return window.child; },
+      [store](HWND) { return store; });
+  return WaitFor(messenger.Invoke("getProducts"));
+}
+
+bool CatalogSerializesNestedPricesAndSubscriptionInfo() {
+  const auto response = ReadCatalog(CatalogShape::kComplete);
+  TEST_CHECK(response.kind == ResponseKind::kSuccess);
+  const auto& products = std::get<flutter::EncodableList>(response.value);
+  TEST_CHECK(products.size() == 1);
+  const auto& product = std::get<EncodableMap>(products.front());
+  TEST_CHECK(std::get<std::string>(product.at(EncodableValue("price"))) ==
+             "$3.00");
+  const auto& skus =
+      std::get<flutter::EncodableList>(product.at(EncodableValue("skus")));
+  TEST_CHECK(skus.size() == 1);
+  const auto& sku = std::get<EncodableMap>(skus.front());
+  const auto& price = std::get<EncodableMap>(sku.at(EncodableValue("price")));
+  TEST_CHECK(std::get<std::string>(price.at(EncodableValue("currencyCode"))) ==
+             "USD");
+  TEST_CHECK(std::get<std::string>(
+                 price.at(EncodableValue("unformattedPrice"))) == "3.00");
+  const auto& subscription =
+      std::get<EncodableMap>(sku.at(EncodableValue("subscriptionInfo")));
+  TEST_CHECK(
+      std::get<int64_t>(subscription.at(EncodableValue("billingPeriod"))) == 1);
+  const auto& collection =
+      std::get<EncodableMap>(sku.at(EncodableValue("collectionData")));
+  TEST_CHECK(std::get<bool>(collection.at(EncodableValue("isTrial"))));
+  const auto& availabilities = std::get<flutter::EncodableList>(
+      sku.at(EncodableValue("availabilities")));
+  TEST_CHECK(availabilities.size() == 1);
+  const auto& availability = std::get<EncodableMap>(availabilities.front());
+  const auto& offer_price =
+      std::get<EncodableMap>(availability.at(EncodableValue("price")));
+  TEST_CHECK(std::get<std::string>(
+                 offer_price.at(EncodableValue("formattedPrice"))) == "$3.00");
+  return true;
+}
+
+bool MissingCatalogPricesReturnErrors() {
+  for (const auto shape :
+       {CatalogShape::kNoSkuPrice, CatalogShape::kNoAvailabilityPrice}) {
+    const auto response = ReadCatalog(shape);
+    TEST_CHECK(response.kind == ResponseKind::kError);
+    TEST_CHECK(response.error_code == "0x8000FFFF");
+  }
+  return true;
+}
+
+bool MissingCatalogCollectionsReturnErrors() {
+  for (const auto shape :
+       {CatalogShape::kNoSkus, CatalogShape::kNoAvailabilities}) {
+    const auto response = ReadCatalog(shape);
+    TEST_CHECK(response.kind == ResponseKind::kError);
+    TEST_CHECK(response.error_code == "0x8000FFFF");
+  }
+  return true;
+}
+
+bool EmptyCatalogCollectionsRemainValid() {
+  for (const auto shape :
+       {CatalogShape::kEmptySkus, CatalogShape::kEmptyAvailabilities}) {
+    const auto response = ReadCatalog(shape);
+    TEST_CHECK(response.kind == ResponseKind::kSuccess);
+  }
+  return true;
+}
+
+bool CatalogQueryErrorsPreserveHResult() {
+  const auto response = ReadCatalog(CatalogShape::kQueryError);
+  TEST_CHECK(response.kind == ResponseKind::kError);
+  TEST_CHECK(response.error_code == "0x80070005");
+  return true;
+}
+
 bool PluginInstancesUseTheirOwnWindows() {
   TestWindow first_window;
   TestWindow second_window;
@@ -638,7 +723,14 @@ bool ConcurrentPurchasesAreRejected() {
 }  // namespace
 
 int main(int argc, char** argv) {
-  const bool sta = argc > 1 && std::string(argv[1]) == "--sta";
+  SetErrorMode(SEM_FAILCRITICALERRORS | SEM_NOGPFAULTERRORBOX);
+  bool sta = false;
+  std::string filter;
+  for (int index = 1; index < argc; ++index) {
+    const std::string argument = argv[index];
+    if (argument == "--sta") sta = true;
+    if (argument.rfind("--test=", 0) == 0) filter = argument.substr(7);
+  }
   winrt::init_apartment(sta ? winrt::apartment_type::single_threaded
                             : winrt::apartment_type::multi_threaded);
 
@@ -661,6 +753,14 @@ int main(int argc, char** argv) {
        StoreInitializationFailurePreservesReplyAndPurchaseGuard},
       {"NullAsyncOperationsReturnErrorsInsteadOfDereferencingNull",
        NullAsyncOperationsReturnErrorsInsteadOfDereferencingNull},
+      {"CatalogSerializesNestedPricesAndSubscriptionInfo",
+       CatalogSerializesNestedPricesAndSubscriptionInfo},
+      {"MissingCatalogPricesReturnErrors", MissingCatalogPricesReturnErrors},
+      {"MissingCatalogCollectionsReturnErrors",
+       MissingCatalogCollectionsReturnErrors},
+      {"EmptyCatalogCollectionsRemainValid",
+       EmptyCatalogCollectionsRemainValid},
+      {"CatalogQueryErrorsPreserveHResult", CatalogQueryErrorsPreserveHResult},
       {"PluginInstancesUseTheirOwnWindows", PluginInstancesUseTheirOwnWindows},
       {"CheckPurchaseOwnsStoreIdAcrossSuspension",
        CheckPurchaseOwnsStoreIdAcrossSuspension},
@@ -669,11 +769,14 @@ int main(int argc, char** argv) {
       {"ConcurrentPurchasesAreRejected", ConcurrentPurchasesAreRejected},
   };
 
+  bool selected = false;
   for (const auto& test : tests) {
+    if (!filter.empty() && filter != test.first) continue;
+    selected = true;
     if (!test.second()) {
       return 1;
     }
     std::cout << "[PASS] " << test.first << std::endl;
   }
-  return 0;
+  return selected ? 0 : 2;
 }
