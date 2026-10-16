@@ -5,6 +5,7 @@
 #include <flutter/plugin_registrar_windows.h>
 
 #include <atomic>
+#include <chrono>
 #include <functional>
 #include <memory>
 
@@ -12,13 +13,16 @@
 
 namespace windows_iap {
 
+class StoreRequestManager;
+
 class WindowsIapPlugin : public flutter::Plugin {
  public:
-  static void RegisterWithRegistrar(flutter::PluginRegistrarWindows *registrar);
+  static void RegisterWithRegistrar(flutter::PluginRegistrarWindows* registrar);
 
-  WindowsIapPlugin(flutter::BinaryMessenger* messenger,
-                   std::function<HWND()> view_window,
-                   StoreApiFactory store_factory = CreateStoreApi);
+  WindowsIapPlugin(
+      flutter::BinaryMessenger* messenger, std::function<HWND()> view_window,
+      StoreApiFactory store_factory = CreateStoreApi,
+      std::chrono::milliseconds query_timeout = std::chrono::seconds(30));
 
   virtual ~WindowsIapPlugin();
 
@@ -31,13 +35,16 @@ class WindowsIapPlugin : public flutter::Plugin {
   std::function<HWND()> view_window_;
   StoreApiFactory store_factory_;
   DWORD platform_thread_;
+  std::chrono::milliseconds query_timeout_;
+  std::shared_ptr<std::atomic_bool> alive_;
+  std::unique_ptr<StoreRequestManager> requests_;
   std::shared_ptr<std::atomic_bool> purchase_pending_;
 
   std::shared_ptr<StoreApi> CreateStoreForRequest() const;
 
   // Called when a method is called on this plugin's channel from Dart.
   void HandleMethodCall(
-      const flutter::MethodCall<flutter::EncodableValue> &method_call,
+      const flutter::MethodCall<flutter::EncodableValue>& method_call,
       std::unique_ptr<flutter::MethodResult<flutter::EncodableValue>> result);
 };
 

@@ -1,18 +1,18 @@
 #include "windows_iap_plugin.h"
 
 #include <flutter/standard_method_codec.h>
-
 #include <windows.h>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Services.Store.h>
 
+#include <atomic>
 #include <chrono>
 #include <future>
 #include <iostream>
 #include <memory>
+#include <stdexcept>
 #include <string>
 #include <utility>
-
-#include <winrt/Windows.Foundation.Collections.h>
-#include <winrt/Windows.Services.Store.h>
 
 namespace {
 
@@ -53,8 +53,7 @@ class ResponseResult final : public flutter::MethodResult<EncodableValue> {
     completion_->set_value(std::move(response));
   }
 
-  void ErrorInternal(const std::string& error_code,
-                     const std::string&,
+  void ErrorInternal(const std::string& error_code, const std::string&,
                      const EncodableValue*) override {
     Response response;
     response.kind = ResponseKind::kError;
@@ -74,9 +73,7 @@ class ResponseResult final : public flutter::MethodResult<EncodableValue> {
 
 class TestBinaryMessenger final : public flutter::BinaryMessenger {
  public:
-  void Send(const std::string&,
-            const uint8_t*,
-            size_t,
+  void Send(const std::string&, const uint8_t*, size_t,
             flutter::BinaryReply) const override {}
 
   void SetMessageHandler(const std::string& channel,
@@ -89,6 +86,8 @@ class TestBinaryMessenger final : public flutter::BinaryMessenger {
       handler_ = std::move(handler);
     }
   }
+
+  int response_count() const { return replies_->load(); }
 
   void RejectFurtherHandlerChanges() { reject_handler_changes_ = true; }
 
@@ -111,28 +110,30 @@ class TestBinaryMessenger final : public flutter::BinaryMessenger {
         method, std::make_unique<EncodableValue>(std::move(arguments)));
     const auto& codec = flutter::StandardMethodCodec::GetInstance();
     const auto message = codec.EncodeMethodCall(call);
-    handler_(
-        message->data(), message->size(),
-        [completion, &codec](const uint8_t* reply, size_t reply_size) {
-          ResponseResult result(completion);
-          if (!codec.DecodeAndProcessResponseEnvelope(
-                  reply, reply_size, &result)) {
-            Response response;
-            response.kind = ResponseKind::kDecodeFailure;
-            completion->set_value(std::move(response));
-          }
-        });
+    handler_(message->data(), message->size(),
+             [completion, &codec, replies = replies_](const uint8_t* reply,
+                                                      size_t reply_size) {
+               replies->fetch_add(1);
+               ResponseResult result(completion);
+               if (!codec.DecodeAndProcessResponseEnvelope(reply, reply_size,
+                                                           &result)) {
+                 Response response;
+                 response.kind = ResponseKind::kDecodeFailure;
+                 completion->set_value(std::move(response));
+               }
+             });
     return future;
   }
 
  private:
+  std::shared_ptr<std::atomic_int> replies_ =
+      std::make_shared<std::atomic_int>(0);
   flutter::BinaryMessageHandler handler_;
   bool reject_handler_changes_ = false;
   bool handler_changed_while_rejected_ = false;
 };
 
-struct FakeStoreLicense
-    : implements<FakeStoreLicense, IStoreLicense> {
+struct FakeStoreLicense : implements<FakeStoreLicense, IStoreLicense> {
   FakeStoreLicense(hstring sku_store_id, DateTime expiration_date)
       : sku_store_id_(std::move(sku_store_id)),
         expiration_date_(expiration_date) {}
@@ -148,8 +149,7 @@ struct FakeStoreLicense
   DateTime expiration_date_;
 };
 
-struct FakeAppLicense
-    : implements<FakeAppLicense, IStoreAppLicense> {
+struct FakeAppLicense : implements<FakeAppLicense, IStoreAppLicense> {
   explicit FakeAppLicense(
       Windows::Foundation::Collections::IMapView<hstring, StoreLicense>
           add_on_licenses)
@@ -188,11 +188,10 @@ struct FakePurchaseResult
 
 class FakeStoreApi final : public StoreApi {
  public:
-  FakeStoreApi(StoreAppLicense app_license,
-               StorePurchaseStatus purchase_status =
-                   StorePurchaseStatus::Succeeded,
-               hresult purchase_error = S_OK,
-               std::chrono::milliseconds delay = 20ms)
+  FakeStoreApi(
+      StoreAppLicense app_license,
+      StorePurchaseStatus purchase_status = StorePurchaseStatus::Succeeded,
+      hresult purchase_error = S_OK, std::chrono::milliseconds delay = 20ms)
       : app_license_(std::move(app_license)),
         purchase_status_(purchase_status),
         purchase_error_(purchase_error),
@@ -200,6 +199,8 @@ class FakeStoreApi final : public StoreApi {
 
   IAsyncOperation<StorePurchaseResult> RequestPurchaseAsync(
       hstring store_id) override {
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([this] { cancellations_.fetch_add(1); });
     last_purchase_id_ = std::move(store_id);
     co_await resume_after(delay_);
     auto purchase_interface =
@@ -210,13 +211,20 @@ class FakeStoreApi final : public StoreApi {
   }
 
   IAsyncOperation<StoreProductQueryResult> GetProductsAsync() override {
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([this] { cancellations_.fetch_add(1); });
+    co_await resume_after(delay_);
     co_return StoreProductQueryResult{nullptr};
   }
 
   IAsyncOperation<StoreAppLicense> GetAppLicenseAsync() override {
+    auto cancellation = co_await get_cancellation_token();
+    cancellation.callback([this] { cancellations_.fetch_add(1); });
     co_await resume_after(delay_);
     co_return app_license_;
   }
+
+  int cancellations() const { return cancellations_.load(); }
 
   hstring last_purchase_id() const { return last_purchase_id_; }
 
@@ -226,14 +234,46 @@ class FakeStoreApi final : public StoreApi {
   hresult purchase_error_;
   std::chrono::milliseconds delay_;
   hstring last_purchase_id_;
+  std::atomic_int cancellations_{0};
 };
 
+class NullOperationStoreApi final : public StoreApi {
+ public:
+  IAsyncOperation<StorePurchaseResult> RequestPurchaseAsync(hstring) override {
+    return nullptr;
+  }
+  IAsyncOperation<StoreProductQueryResult> GetProductsAsync() override {
+    return nullptr;
+  }
+  IAsyncOperation<StoreAppLicense> GetAppLicenseAsync() override {
+    return nullptr;
+  }
+};
+
+void PumpMessages() {
+  MSG message;
+  while (PeekMessageW(&message, nullptr, 0, 0, PM_REMOVE)) {
+    TranslateMessage(&message);
+    DispatchMessageW(&message);
+  }
+  MsgWaitForMultipleObjectsEx(0, nullptr, 2, QS_ALLINPUT, MWMO_INPUTAVAILABLE);
+}
+
+void PumpFor(std::chrono::milliseconds duration) {
+  const auto until = std::chrono::steady_clock::now() + duration;
+  while (std::chrono::steady_clock::now() < until) PumpMessages();
+}
+
 Response WaitFor(std::future<Response> future) {
-  if (future.wait_for(3s) != std::future_status::ready) {
-    Response response;
-    response.kind = ResponseKind::kDecodeFailure;
-    response.error_code = "timeout";
-    return response;
+  const auto until = std::chrono::steady_clock::now() + 3s;
+  while (future.wait_for(0s) != std::future_status::ready) {
+    if (std::chrono::steady_clock::now() >= until) {
+      Response response;
+      response.kind = ResponseKind::kDecodeFailure;
+      response.error_code = "timeout";
+      return response;
+    }
+    PumpMessages();
   }
   return future.get();
 }
@@ -262,13 +302,12 @@ struct TestWindow {
   HWND child = nullptr;
 
   TestWindow() {
-    root = CreateWindowExW(0, L"STATIC", L"", WS_OVERLAPPED,
-                           0, 0, 100, 100, nullptr, nullptr,
-                           GetModuleHandleW(nullptr), nullptr);
+    root =
+        CreateWindowExW(0, L"STATIC", L"", WS_OVERLAPPED, 0, 0, 100, 100,
+                        nullptr, nullptr, GetModuleHandleW(nullptr), nullptr);
     if (root != nullptr) {
-      child = CreateWindowExW(0, L"STATIC", L"", WS_CHILD,
-                              0, 0, 50, 50, root, nullptr,
-                              GetModuleHandleW(nullptr), nullptr);
+      child = CreateWindowExW(0, L"STATIC", L"", WS_CHILD, 0, 0, 50, 50, root,
+                              nullptr, GetModuleHandleW(nullptr), nullptr);
     }
   }
 
@@ -285,13 +324,13 @@ struct TestWindow {
   TestWindow& operator=(const TestWindow&) = delete;
 };
 
-#define TEST_CHECK(condition)                                                \
-  do {                                                                       \
-    if (!(condition)) {                                                      \
-      std::cerr << __FUNCTION__ << ":" << __LINE__                          \
-                << ": check failed: " #condition << std::endl;              \
-      return false;                                                          \
-    }                                                                        \
+#define TEST_CHECK(condition)                                  \
+  do {                                                         \
+    if (!(condition)) {                                        \
+      std::cerr << __FUNCTION__ << ":" << __LINE__             \
+                << ": check failed: " #condition << std::endl; \
+      return false;                                            \
+    }                                                          \
   } while (false)
 
 bool NoViewReturnsAnErrorWithoutCreatingStore() {
@@ -324,6 +363,158 @@ bool PluginDestructionDoesNotTouchMessenger() {
   return true;
 }
 
+bool ShutdownCompletesPendingStoreRequests() {
+  auto store = std::make_shared<FakeStoreApi>(
+      CreateAppLicense(), StorePurchaseStatus::Succeeded, S_OK, 120ms);
+  TestWindow window;
+  TEST_CHECK(window.child != nullptr);
+  TestBinaryMessenger messenger;
+  std::future<Response> query;
+  std::future<Response> purchase;
+  {
+    WindowsIapPlugin plugin(
+        &messenger, [&window] { return window.child; },
+        [store](HWND) { return store; });
+    query = messenger.Invoke("getAppLicense");
+    purchase =
+        messenger.Invoke("makePurchase", StoreIdArguments("test-product"));
+  }
+  const auto query_response = WaitFor(std::move(query));
+  const auto purchase_response = WaitFor(std::move(purchase));
+  TEST_CHECK(query_response.kind == ResponseKind::kError);
+  TEST_CHECK(query_response.error_code == "plugin_disposed");
+  TEST_CHECK(purchase_response.kind == ResponseKind::kError);
+  TEST_CHECK(purchase_response.error_code == "plugin_disposed");
+  TEST_CHECK(store->cancellations() == 2);
+  PumpFor(200ms);
+  TEST_CHECK(messenger.response_count() == 2);
+  return true;
+}
+
+bool StaleMethodHandlerDoesNotAccessDestroyedPlugin() {
+  TestWindow window;
+  TestBinaryMessenger messenger;
+  int factories = 0;
+  {
+    WindowsIapPlugin plugin(
+        &messenger, [&window] { return window.child; },
+        [&factories](HWND) {
+          ++factories;
+          return std::shared_ptr<StoreApi>();
+        });
+  }
+  const auto response = WaitFor(messenger.Invoke("getProducts"));
+  TEST_CHECK(response.kind == ResponseKind::kError);
+  TEST_CHECK(response.error_code == "plugin_disposed");
+  TEST_CHECK(factories == 0);
+  return true;
+}
+
+bool EveryQueryTimesOutAndCancelsWithoutDuplicateReplies() {
+  const char* methods[] = {"getProducts", "getAppLicense", "getAddonLicenses",
+                           "checkPurchase"};
+  for (const auto* method : methods) {
+    auto store = std::make_shared<FakeStoreApi>(
+        CreateAppLicense(), StorePurchaseStatus::Succeeded, S_OK, 120ms);
+    TestWindow window;
+    TestBinaryMessenger messenger;
+    WindowsIapPlugin plugin(
+        &messenger, [&window] { return window.child; },
+        [store](HWND) { return store; }, 20ms);
+    const auto response = WaitFor(messenger.Invoke(method));
+    TEST_CHECK(response.kind == ResponseKind::kError);
+    TEST_CHECK(response.error_code == "store_timeout");
+    // The timeout reply may arrive just before Cancel finishes on the timer
+    // thread.
+    PumpFor(200ms);
+    TEST_CHECK(store->cancellations() == 1);
+    TEST_CHECK(messenger.response_count() == 1);
+  }
+  return true;
+}
+
+bool DelayedPurchaseKeepsItsGuardBeyondQueryDeadline() {
+  auto store = std::make_shared<FakeStoreApi>(
+      CreateAppLicense(), StorePurchaseStatus::Succeeded, S_OK, 150ms);
+  TestWindow window;
+  TestBinaryMessenger messenger;
+  WindowsIapPlugin plugin(
+      &messenger, [&window] { return window.child; },
+      [store](HWND) { return store; }, 20ms);
+  auto first =
+      messenger.Invoke("makePurchase", StoreIdArguments("test-product"));
+  PumpFor(50ms);
+  const auto second = WaitFor(
+      messenger.Invoke("makePurchase", StoreIdArguments("test-product")));
+  TEST_CHECK(second.error_code == "purchase_in_progress");
+  TEST_CHECK(WaitFor(std::move(first)).kind == ResponseKind::kSuccess);
+  TEST_CHECK(store->cancellations() == 0);
+  return true;
+}
+
+bool TimeoutCompletionRaceRepliesExactlyOnce() {
+  TestWindow window;
+  for (int index = 0; index < 24; ++index) {
+    auto store = std::make_shared<FakeStoreApi>(
+        CreateAppLicense(), StorePurchaseStatus::Succeeded, S_OK, 5ms);
+    TestBinaryMessenger messenger;
+    {
+      WindowsIapPlugin plugin(
+          &messenger, [&window] { return window.child; },
+          [store](HWND) { return store; }, 5ms);
+      const auto response = WaitFor(messenger.Invoke("getAppLicense"));
+      TEST_CHECK(response.kind == ResponseKind::kSuccess ||
+                 response.error_code == "store_timeout");
+    }
+    PumpFor(10ms);
+    TEST_CHECK(messenger.response_count() == 1);
+  }
+  return true;
+}
+
+bool StoreInitializationFailurePreservesReplyAndPurchaseGuard() {
+  auto store = std::make_shared<FakeStoreApi>(CreateAppLicense());
+  TestWindow window;
+  TestBinaryMessenger messenger;
+  bool fail_once = true;
+  WindowsIapPlugin plugin(
+      &messenger, [&window] { return window.child; },
+      [store, &fail_once](HWND) -> std::shared_ptr<StoreApi> {
+        if (fail_once) {
+          fail_once = false;
+          throw hresult_error(E_FAIL, L"Test Store initialization failure.");
+        }
+        return store;
+      });
+  const auto failed = WaitFor(
+      messenger.Invoke("makePurchase", StoreIdArguments("test-product")));
+  TEST_CHECK(failed.kind == ResponseKind::kError);
+  TEST_CHECK(failed.error_code == "0x80004005");
+  const auto retried = WaitFor(
+      messenger.Invoke("makePurchase", StoreIdArguments("test-product")));
+  TEST_CHECK(retried.kind == ResponseKind::kSuccess);
+  return true;
+}
+
+bool NullAsyncOperationsReturnErrorsInsteadOfDereferencingNull() {
+  auto store = std::make_shared<NullOperationStoreApi>();
+  TestWindow window;
+  TestBinaryMessenger messenger;
+  WindowsIapPlugin plugin(
+      &messenger, [&window] { return window.child; },
+      [store](HWND) { return store; });
+  const char* methods[] = {"getProducts",      "getAppLicense",
+                           "getAddonLicenses", "checkPurchase",
+                           "makePurchase",     "makePurchaseDetailed"};
+  for (const auto* method : methods) {
+    const auto response =
+        WaitFor(messenger.Invoke(method, StoreIdArguments("test-product")));
+    TEST_CHECK(response.kind == ResponseKind::kError);
+    TEST_CHECK(response.error_code == "0x8000FFFF");
+  }
+  return true;
+}
+
 bool PluginInstancesUseTheirOwnWindows() {
   TestWindow first_window;
   TestWindow second_window;
@@ -351,10 +542,8 @@ bool PluginInstancesUseTheirOwnWindows() {
           return second_store;
         });
 
-    const Response first =
-        WaitFor(first_messenger.Invoke("getAppLicense"));
-    const Response second =
-        WaitFor(second_messenger.Invoke("getAppLicense"));
+    const Response first = WaitFor(first_messenger.Invoke("getAppLicense"));
+    const Response second = WaitFor(second_messenger.Invoke("getAppLicense"));
     TEST_CHECK(first.kind == ResponseKind::kSuccess);
     TEST_CHECK(second.kind == ResponseKind::kSuccess);
   }
@@ -368,8 +557,8 @@ bool PluginInstancesUseTheirOwnWindows() {
 bool CheckPurchaseOwnsStoreIdAcrossSuspension() {
   const std::string product_store_id = "9TESTPRODUCT";
   auto store = std::make_shared<FakeStoreApi>(
-      CreateAppLicense(product_store_id),
-      StorePurchaseStatus::Succeeded, S_OK, 75ms);
+      CreateAppLicense(product_store_id), StorePurchaseStatus::Succeeded, S_OK,
+      75ms);
   TestWindow window;
   TEST_CHECK(window.child != nullptr);
   TestBinaryMessenger messenger;
@@ -378,8 +567,7 @@ bool CheckPurchaseOwnsStoreIdAcrossSuspension() {
       [store](HWND) { return store; });
 
   const Response response = WaitFor(
-      messenger.Invoke("checkPurchase",
-                       StoreIdArguments(product_store_id)));
+      messenger.Invoke("checkPurchase", StoreIdArguments(product_store_id)));
   TEST_CHECK(response.kind == ResponseKind::kSuccess);
   const auto* entitled = std::get_if<bool>(&response.value);
   TEST_CHECK(entitled != nullptr && *entitled);
@@ -387,9 +575,9 @@ bool CheckPurchaseOwnsStoreIdAcrossSuspension() {
 }
 
 bool PurchaseStatusAndExtendedErrorAreBothAvailable() {
-  auto store = std::make_shared<FakeStoreApi>(
-      CreateAppLicense(), StorePurchaseStatus::NetworkError,
-      hresult{E_FAIL}, 30ms);
+  auto store = std::make_shared<FakeStoreApi>(CreateAppLicense(),
+                                              StorePurchaseStatus::NetworkError,
+                                              hresult{E_FAIL}, 30ms);
   TestWindow window;
   TEST_CHECK(window.child != nullptr);
   TestBinaryMessenger messenger;
@@ -405,20 +593,17 @@ bool PurchaseStatusAndExtendedErrorAreBothAvailable() {
   TEST_CHECK(*legacy_status ==
              static_cast<int32_t>(StorePurchaseStatus::NetworkError));
 
-  const Response detailed = WaitFor(
-      messenger.Invoke("makePurchaseDetailed",
-                       StoreIdArguments("test-product")));
+  const Response detailed = WaitFor(messenger.Invoke(
+      "makePurchaseDetailed", StoreIdArguments("test-product")));
   TEST_CHECK(detailed.kind == ResponseKind::kSuccess);
   const auto* details = std::get_if<EncodableMap>(&detailed.value);
   TEST_CHECK(details != nullptr);
   const auto status_entry = details->find(EncodableValue("status"));
-  const auto error_entry =
-      details->find(EncodableValue("extendedErrorCode"));
+  const auto error_entry = details->find(EncodableValue("extendedErrorCode"));
   TEST_CHECK(status_entry != details->end());
   TEST_CHECK(error_entry != details->end());
   const auto* status = std::get_if<int32_t>(&status_entry->second);
-  const auto* extended_error =
-      std::get_if<std::string>(&error_entry->second);
+  const auto* extended_error = std::get_if<std::string>(&error_entry->second);
   TEST_CHECK(status != nullptr);
   TEST_CHECK(*status ==
              static_cast<int32_t>(StorePurchaseStatus::NetworkError));
@@ -452,22 +637,36 @@ bool ConcurrentPurchasesAreRejected() {
 
 }  // namespace
 
-int main() {
-  winrt::init_apartment(winrt::apartment_type::multi_threaded);
+int main(int argc, char** argv) {
+  const bool sta = argc > 1 && std::string(argv[1]) == "--sta";
+  winrt::init_apartment(sta ? winrt::apartment_type::single_threaded
+                            : winrt::apartment_type::multi_threaded);
 
   const std::pair<const char*, bool (*)()> tests[] = {
       {"NoViewReturnsAnErrorWithoutCreatingStore",
        NoViewReturnsAnErrorWithoutCreatingStore},
       {"PluginDestructionDoesNotTouchMessenger",
        PluginDestructionDoesNotTouchMessenger},
-      {"PluginInstancesUseTheirOwnWindows",
-       PluginInstancesUseTheirOwnWindows},
+      {"ShutdownCompletesPendingStoreRequests",
+       ShutdownCompletesPendingStoreRequests},
+      {"StaleMethodHandlerDoesNotAccessDestroyedPlugin",
+       StaleMethodHandlerDoesNotAccessDestroyedPlugin},
+      {"EveryQueryTimesOutAndCancelsWithoutDuplicateReplies",
+       EveryQueryTimesOutAndCancelsWithoutDuplicateReplies},
+      {"DelayedPurchaseKeepsItsGuardBeyondQueryDeadline",
+       DelayedPurchaseKeepsItsGuardBeyondQueryDeadline},
+      {"TimeoutCompletionRaceRepliesExactlyOnce",
+       TimeoutCompletionRaceRepliesExactlyOnce},
+      {"StoreInitializationFailurePreservesReplyAndPurchaseGuard",
+       StoreInitializationFailurePreservesReplyAndPurchaseGuard},
+      {"NullAsyncOperationsReturnErrorsInsteadOfDereferencingNull",
+       NullAsyncOperationsReturnErrorsInsteadOfDereferencingNull},
+      {"PluginInstancesUseTheirOwnWindows", PluginInstancesUseTheirOwnWindows},
       {"CheckPurchaseOwnsStoreIdAcrossSuspension",
        CheckPurchaseOwnsStoreIdAcrossSuspension},
       {"PurchaseStatusAndExtendedErrorAreBothAvailable",
        PurchaseStatusAndExtendedErrorAreBothAvailable},
-      {"ConcurrentPurchasesAreRejected",
-       ConcurrentPurchasesAreRejected},
+      {"ConcurrentPurchasesAreRejected", ConcurrentPurchasesAreRejected},
   };
 
   for (const auto& test : tests) {

@@ -8,7 +8,7 @@
 
 ```yaml
 dependencies:
-  windows_store_iap: ^0.2.2
+  windows_store_iap: ^0.2.3
 ```
 
 ```dart
@@ -26,6 +26,31 @@ import 'package:windows_store_iap/windows_store_iap.dart';
 - MethodChannel 使用结构化数据，避免手工拼接 JSON 导致转义或解析错误。
 - 提供 `makePurchase`、`makePurchaseDetailed`、`getProducts`、`checkPurchase`、`getAddonLicenses`、`getAppLicense` API。
 - 保留 `WindowsIap` 兼容类，并为新项目提供 `WindowsStoreIap` 入口。
+
+## 异步请求与退出
+
+商品和许可证查询（`getProducts`、`checkPurchase`、`getAddonLicenses`、
+`getAppLicense`）最多等待 30 秒，超时抛出 `PlatformException`，其 `code`
+为 `store_timeout`。原生端会请求取消该操作并忽略迟到结果；调用方可显示错误并重试。
+
+购买界面不使用查询超时。原生购买尚未结束时，重复购买返回
+`purchase_in_progress`，避免超时后再次发起付款。插件销毁时会收尾并请求取消未完成的
+Store 操作，返回 `plugin_disposed`；系统取消属于尽力而为，不能据此认定付款已取消，
+下次启动应重新查询许可证确认权益。
+
+## 原生回归测试
+
+先在 `example` 下执行 `flutter pub get` 和 `flutter build windows --release`，
+再执行：
+
+```powershell
+cmake -S windows -B build/windows/x64 -DWINDOWS_STORE_IAP_BUILD_TESTS=ON
+cmake --build build/windows/x64 --config Release --target windows_store_iap_plugin_tests
+ctest --test-dir build/windows/x64/plugins/windows_store_iap -C Release --output-on-failure
+```
+
+测试使用模拟 Store API，不发起购买、不显示应用窗口；同时覆盖 STA（桌面应用使用的
+单线程单元）和 MTA，以及超时与完成同时发生时的回复互斥。
 
 ## 订阅语义
 

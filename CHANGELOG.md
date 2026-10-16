@@ -1,3 +1,15 @@
+## 0.2.3
+
+- Track pending native Store requests and cancel them when the plugin shuts down.
+- Guard retained MethodChannel handlers against accessing a destroyed plugin.
+- Bound product and license queries to 30 seconds, return `store_timeout`, and
+  discard late or duplicate replies after cancellation.
+- Keep purchase UI requests pending until the Store resolves them; query
+  deadlines do not release the concurrent-purchase guard.
+- Return a structured error for an invalid/null Store async operation.
+- Add STA and MTA native regression tests for shutdown, query cancellation,
+  timeout/completion races, delayed purchases, and initialization failures.
+
 ## 0.2.2
 
 - Fix a shutdown-time access violation caused by unregistering the MethodChannel

@@ -40,6 +40,8 @@ endif()
 
 # Any new source files that you add to the plugin should be added here.
 list(APPEND PLUGIN_SOURCES
+  "store_request.cpp"
+  "store_request.h"
   "store_api.cpp"
   "store_api.h"
   "windows_iap_plugin.cpp"
@@ -135,4 +137,6 @@ if(WINDOWS_STORE_IAP_BUILD_TESTS)
   )
   add_test(NAME windows_store_iap_plugin_tests
     COMMAND windows_store_iap_plugin_tests)
+  add_test(NAME windows_store_iap_plugin_tests_sta
+    COMMAND windows_store_iap_plugin_tests --sta)
 endif()

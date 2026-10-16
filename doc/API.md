@@ -1,6 +1,6 @@
 # windows_store_iap API
 
-本文档对应 `windows_store_iap 0.2.2`。所有时间均以 UTC 表示；序列化后的时间字段使用 Unix epoch 毫秒。
+本文档对应 `windows_store_iap 0.2.3`。所有时间均以 UTC 表示；序列化后的时间字段使用 Unix epoch 毫秒。
 
 ## 导入和入口
 
@@ -14,6 +14,16 @@ final store = WindowsStoreIap();
 `WindowsIap` 与 `WindowsStoreIap` 提供相同能力。前者用于兼容原 `windows_iap` 源码，新的应用建议使用 `WindowsStoreIap`。
 
 插件只支持 Windows。其他平台调用会抛出 `UnsupportedError`。应用必须以 MSIX 等形式关联 Microsoft Store 产品；未建立 Store 许可证上下文时，原生 API 可能返回错误。
+
+## 异步错误与生命周期
+
+只读查询 `getProducts`、`checkPurchase`、`getAddonLicenses` 和 `getAppLicense`
+在 30 秒后返回 `PlatformException(code: 'store_timeout')`，并请求取消原生操作。
+迟到结果不会再次回复。插件销毁时未完成请求返回 `plugin_disposed`。
+
+购买请求不使用查询超时，进行中的购买仍会阻止第二次购买请求；`plugin_disposed`
+不代表 Microsoft Store 已取消付款。应用下次启动应查询许可证，确认购买后的权益。
+Windows 的取消为尽力而为，不保证 Store 操作立即停止。
 
 ## WindowsStoreIap
 
