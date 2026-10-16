@@ -8,7 +8,7 @@
 
 ```yaml
 dependencies:
-  windows_store_iap: ^0.2.4
+  windows_store_iap: ^0.2.5
 ```
 
 ```dart

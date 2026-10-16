@@ -1,3 +1,10 @@
+## 0.2.5
+
+- Expand native regression coverage for synchronous Store failures, purchase
+  retries, every purchase status, inactive/expired/unrelated licenses, wrong-thread
+  calls, and recovery after a query timeout.
+- Runtime behavior and public APIs are unchanged from 0.2.4.
+
 ## 0.2.4
 
 - Return a structured error for missing native SKU/availability prices and

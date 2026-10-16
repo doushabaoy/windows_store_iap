@@ -1,6 +1,6 @@
 # windows_store_iap API
 
-本文档对应 `windows_store_iap 0.2.4`。所有时间均以 UTC 表示；序列化后的时间字段使用 Unix epoch 毫秒。
+本文档对应 `windows_store_iap 0.2.5`。所有时间均以 UTC 表示；序列化后的时间字段使用 Unix epoch 毫秒。
 
 ## 导入和入口
 
