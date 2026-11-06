@@ -14,8 +14,8 @@
    确保与 Partner Center 匹配；本仓库不提供、也不修改你的身份或证书。
 4. 先从 Store 安装/获取该应用建立许可证上下文，再安装或更新为包含本地插件的测试
    MSIX。若使用私有分发/测试航班，确认测试账号有访问权限和许可证。
-5. 示例通过父目录 path 依赖使用当前源码；若接入业务应用，也应使用 path 依赖测试
-   尚未发布的 0.3.0。执行 `flutter pub get`、`flutter build windows --release`，
+5. 示例通过父目录 path 依赖使用当前源码；业务应用可使用 path 依赖测试本地源码，
+   或使用发布包 `windows_store_iap: ^0.3.0`。执行 `flutter pub get`、`flutter build windows --release`，
    再按现有流程打包 MSIX，保持包身份一致并递增应用包版本。
 6. 普通用户权限启动安装后的应用，不以裸 exe / `flutter run` 的结果代替 MSIX 验收。
 
