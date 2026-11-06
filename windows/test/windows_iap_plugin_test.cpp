@@ -7,6 +7,7 @@
 
 #include <atomic>
 #include <chrono>
+#include <functional>
 #include <future>
 #include <iostream>
 #include <memory>
@@ -103,7 +104,8 @@ class TestBinaryMessenger final : public flutter::BinaryMessenger {
   }
 
   std::future<Response> Invoke(const std::string& method,
-                               EncodableMap arguments = {}) {
+                               EncodableMap arguments = {},
+                               std::function<void()> after_reply = {}) {
     auto completion = std::make_shared<std::promise<Response>>();
     auto future = completion->get_future();
     if (!handler_) {
@@ -118,8 +120,9 @@ class TestBinaryMessenger final : public flutter::BinaryMessenger {
     const auto& codec = flutter::StandardMethodCodec::GetInstance();
     const auto message = codec.EncodeMethodCall(call);
     handler_(message->data(), message->size(),
-             [completion, &codec, replies = replies_](const uint8_t* reply,
-                                                      size_t reply_size) {
+             [completion, &codec, replies = replies_,
+              after_reply = std::move(after_reply)](const uint8_t* reply,
+                                                    size_t reply_size) {
                replies->fetch_add(1);
                ResponseResult result(completion);
                if (!codec.DecodeAndProcessResponseEnvelope(reply, reply_size,
@@ -128,6 +131,7 @@ class TestBinaryMessenger final : public flutter::BinaryMessenger {
                  response.kind = ResponseKind::kDecodeFailure;
                  completion->set_value(std::move(response));
                }
+               if (after_reply) after_reply();
              });
     return future;
   }
@@ -914,13 +918,17 @@ bool ConcurrentPurchasesAreRejected() {
 struct FakeReviewResult
     : implements<FakeReviewResult, IStoreRateAndReviewResult> {
   FakeReviewResult(StoreRateAndReviewStatus status, hstring json, hresult error,
-                   bool was_updated)
+                   bool was_updated, hresult getter_error)
       : status_(status),
         json_(std::move(json)),
         error_(error),
-        was_updated_(was_updated) {}
+        was_updated_(was_updated),
+        getter_error_(getter_error) {}
   StoreRateAndReviewStatus Status() const { return status_; }
-  hstring ExtendedJsonData() const { return json_; }
+  hstring ExtendedJsonData() const {
+    check_hresult(getter_error_);
+    return json_;
+  }
   hresult ExtendedError() const { return error_; }
   bool WasUpdated() const { return was_updated_; }
 
@@ -929,6 +937,7 @@ struct FakeReviewResult
   hstring json_;
   hresult error_;
   bool was_updated_;
+  hresult getter_error_;
 };
 
 class FakeReviewStoreApi final : public FakeStoreApi {
@@ -943,6 +952,11 @@ class FakeReviewStoreApi final : public FakeStoreApi {
   hresult error = S_OK;
   bool was_updated = true;
   bool null_result = false;
+  bool complete_synchronously = false;
+  hresult async_error = S_OK;
+  hresult getter_error = S_OK;
+  std::shared_ptr<StoreApi> license_api;
+  std::shared_ptr<StoreApi> catalog_api;
   int starts = 0;
   DWORD start_thread = 0;
   std::atomic_int review_cancellations{0};
@@ -956,15 +970,26 @@ class FakeReviewStoreApi final : public FakeStoreApi {
     return operation;
   }
 
+  IAsyncOperation<StoreAppLicense> GetAppLicenseAsync() override {
+    return license_api ? license_api->GetAppLicenseAsync()
+                       : FakeStoreApi::GetAppLicenseAsync();
+  }
+
+  IAsyncOperation<StoreProductQueryResult> GetProductsAsync() override {
+    return catalog_api ? catalog_api->GetProductsAsync()
+                       : FakeStoreApi::GetProductsAsync();
+  }
+
  private:
   IAsyncOperation<StoreRateAndReviewResult> ReviewAsync() {
     auto cancellation = co_await get_cancellation_token();
     cancellation.callback([this] { review_cancellations.fetch_add(1); });
-    co_await resume_after(delay_);
+    if (!complete_synchronously) co_await resume_after(delay_);
+    check_hresult(async_error);
     if (null_result) co_return StoreRateAndReviewResult{nullptr};
     co_return windows_iap::testing::MakeStoreObject<StoreRateAndReviewResult,
                                                     FakeReviewResult>(
-        status, json, error, was_updated);
+        status, json, error, was_updated, getter_error);
   }
   std::chrono::milliseconds delay_;
 };
@@ -1205,6 +1230,178 @@ bool ReviewRejectsInvalidWindowAndWrongThreadBeforeStartingStore() {
   return true;
 }
 
+bool ReviewDoesNotChangeCatalogOrSubscriptionQueries() {
+  TestWindow window;
+  for (const auto status : {StoreRateAndReviewStatus::Succeeded,
+                            StoreRateAndReviewStatus::CanceledByUser,
+                            StoreRateAndReviewStatus::NetworkError,
+                            StoreRateAndReviewStatus::Error}) {
+    auto store = std::make_shared<FakeReviewStoreApi>(300ms);
+    store->status = status;
+    store->license_api = std::make_shared<FakeStoreApi>(
+        CreateAppLicense(), StorePurchaseStatus::Succeeded, S_OK, 3ms);
+    store->catalog_api =
+        std::make_shared<CatalogStoreApi>(CatalogShape::kComplete);
+    TestBinaryMessenger messenger;
+    WindowsIapPlugin plugin(
+        &messenger, [&window] { return window.child; },
+        [store](HWND) { return store; });
+    auto review = messenger.Invoke("requestReview");
+    for (const auto* method : {"checkPurchase", "getAddonLicenses",
+                               "getAppLicense", "getProducts"}) {
+      const auto response =
+          WaitFor(messenger.Invoke(method, StoreIdArguments("test-product")));
+      TEST_CHECK(response.kind == ResponseKind::kSuccess);
+      const std::string name(method);
+      if (name == "checkPurchase") {
+        TEST_CHECK(std::get<bool>(response.value));
+      } else if (name == "getProducts") {
+        const auto& products = std::get<flutter::EncodableList>(response.value);
+        TEST_CHECK(products.size() == 1);
+        const auto& product = std::get<EncodableMap>(products.front());
+        TEST_CHECK(std::get<std::string>(product.at(EncodableValue("price"))) ==
+                   "$3.00");
+      } else {
+        const auto& value = std::get<EncodableMap>(response.value);
+        const auto& licenses = name == "getAppLicense"
+                                   ? std::get<EncodableMap>(value.at(
+                                         EncodableValue("addOnLicenses")))
+                                   : value;
+        TEST_CHECK(licenses.size() == 1);
+        const auto& license = std::get<EncodableMap>(licenses.begin()->second);
+        TEST_CHECK(std::get<bool>(license.at(EncodableValue("isEntitled"))));
+        TEST_CHECK(std::get<std::string>(license.at(
+                       EncodableValue("productStoreId"))) == "test-product");
+      }
+    }
+    TEST_CHECK(review.wait_for(0s) != std::future_status::ready);
+    TEST_CHECK(WaitFor(std::move(review)).kind == ResponseKind::kSuccess);
+    TEST_CHECK(std::get<bool>(
+        WaitFor(
+            messenger.Invoke("checkPurchase", StoreIdArguments("test-product")))
+            .value));
+    TEST_CHECK(WaitFor(messenger.Invoke("makePurchaseDetailed",
+                                        StoreIdArguments("test-product")))
+                   .kind == ResponseKind::kSuccess);
+  }
+  return true;
+}
+
+bool QueryTimeoutDoesNotReleasePendingReview() {
+  TestWindow window;
+  auto store = std::make_shared<FakeReviewStoreApi>(200ms);
+  auto slow = std::make_shared<FakeStoreApi>(
+      CreateAppLicense(), StorePurchaseStatus::Succeeded, S_OK, 120ms);
+  store->license_api = slow;
+  TestBinaryMessenger messenger;
+  WindowsIapPlugin plugin(
+      &messenger, [&window] { return window.child; },
+      [store](HWND) { return store; }, 10ms);
+  auto review = messenger.Invoke("requestReview");
+  TEST_CHECK(WaitFor(messenger.Invoke("getAppLicense")).error_code ==
+             "store_timeout");
+  TEST_CHECK(WaitFor(messenger.Invoke("requestReview")).error_code ==
+             "review_in_progress");
+  TEST_CHECK(WaitFor(messenger.Invoke("makePurchase",
+                                      StoreIdArguments("test-product")))
+                 .error_code == "review_in_progress");
+  TEST_CHECK(WaitFor(std::move(review)).kind == ResponseKind::kSuccess);
+  TEST_CHECK(store->review_cancellations.load() == 0);
+  TEST_CHECK(slow->cancellations() == 1);
+  TEST_CHECK(WaitFor(messenger.Invoke("makePurchase",
+                                      StoreIdArguments("test-product")))
+                 .kind == ResponseKind::kSuccess);
+  return true;
+}
+
+bool InvalidPurchaseAttemptDoesNotReleasePendingReview() {
+  TestWindow window;
+  auto store = std::make_shared<FakeReviewStoreApi>(100ms);
+  TestBinaryMessenger messenger;
+  WindowsIapPlugin plugin(
+      &messenger, [&window] { return window.child; },
+      [store](HWND) { return store; });
+  auto review = messenger.Invoke("requestReview");
+  for (const auto* method : {"makePurchase", "makePurchaseDetailed"}) {
+    TEST_CHECK(WaitFor(messenger.Invoke(method)).error_code ==
+               "invalid_arguments");
+  }
+  TEST_CHECK(WaitFor(messenger.Invoke("requestReview")).error_code ==
+             "review_in_progress");
+  TEST_CHECK(WaitFor(std::move(review)).kind == ResponseKind::kSuccess);
+  return true;
+}
+
+bool AsyncReviewFailuresAllowSubsequentPurchase() {
+  TestWindow window;
+  for (const bool getter_failure : {false, true}) {
+    auto store = std::make_shared<FakeReviewStoreApi>(3ms);
+    if (getter_failure) {
+      store->getter_error = E_FAIL;
+    } else {
+      store->async_error = E_ACCESSDENIED;
+    }
+    TestBinaryMessenger messenger;
+    WindowsIapPlugin plugin(
+        &messenger, [&window] { return window.child; },
+        [store](HWND) { return store; });
+    TEST_CHECK(WaitFor(messenger.Invoke("requestReview")).error_code ==
+               (getter_failure ? "0x80004005" : "0x80070005"));
+    TEST_CHECK(WaitFor(messenger.Invoke("makePurchaseDetailed",
+                                        StoreIdArguments("test-product")))
+                   .kind == ResponseKind::kSuccess);
+    store->getter_error = S_OK;
+    store->async_error = S_OK;
+    TEST_CHECK(WaitFor(messenger.Invoke("requestReview")).kind ==
+               ResponseKind::kSuccess);
+    TEST_CHECK(messenger.response_count() == 3);
+  }
+  return true;
+}
+
+bool SynchronousReviewCompletionAllowsImmediateRetry() {
+  TestWindow window;
+  auto store = std::make_shared<FakeReviewStoreApi>(3ms);
+  store->complete_synchronously = true;
+  TestBinaryMessenger messenger;
+  WindowsIapPlugin plugin(
+      &messenger, [&window] { return window.child; },
+      [store](HWND) { return store; });
+  for (int index = 0; index < 20; ++index) {
+    TEST_CHECK(WaitFor(messenger.Invoke("requestReview")).kind ==
+               ResponseKind::kSuccess);
+  }
+  TEST_CHECK(WaitFor(messenger.Invoke("makePurchase",
+                                      StoreIdArguments("test-product")))
+                 .kind == ResponseKind::kSuccess);
+  TEST_CHECK(messenger.response_count() == 21);
+  return true;
+}
+
+bool ReviewReplyCanImmediatelyStartPurchaseWithoutClearingNewGuard() {
+  TestWindow window;
+  auto store = std::make_shared<FakeReviewStoreApi>(120ms);
+  store->complete_synchronously = true;
+  TestBinaryMessenger messenger;
+  WindowsIapPlugin plugin(
+      &messenger, [&window] { return window.child; },
+      [store](HWND) { return store; });
+  std::future<Response> purchase;
+  auto review = messenger.Invoke("requestReview", {}, [&] {
+    purchase = messenger.Invoke("makePurchaseDetailed",
+                                StoreIdArguments("test-product"));
+  });
+  TEST_CHECK(WaitFor(std::move(review)).kind == ResponseKind::kSuccess);
+  TEST_CHECK(purchase.valid());
+  TEST_CHECK(purchase.wait_for(0s) != std::future_status::ready);
+  TEST_CHECK(WaitFor(messenger.Invoke("requestReview")).error_code ==
+             "purchase_in_progress");
+  TEST_CHECK(WaitFor(std::move(purchase)).kind == ResponseKind::kSuccess);
+  TEST_CHECK(WaitFor(messenger.Invoke("requestReview")).kind ==
+             ResponseKind::kSuccess);
+  return true;
+}
+
 // Fake operations resume on raw thread-pool callbacks, unlike the real Store's
 // COM-initialized producer. Keep an MTA alive so those callbacks can marshal
 // their completion back to the main STA even when this test runs in isolation.
@@ -1230,6 +1427,18 @@ int main(int argc, char** argv) {
   const TestMtaUsage mta_usage;
 
   const std::pair<const char*, bool (*)()> tests[] = {
+      {"ReviewDoesNotChangeCatalogOrSubscriptionQueries",
+       ReviewDoesNotChangeCatalogOrSubscriptionQueries},
+      {"QueryTimeoutDoesNotReleasePendingReview",
+       QueryTimeoutDoesNotReleasePendingReview},
+      {"InvalidPurchaseAttemptDoesNotReleasePendingReview",
+       InvalidPurchaseAttemptDoesNotReleasePendingReview},
+      {"AsyncReviewFailuresAllowSubsequentPurchase",
+       AsyncReviewFailuresAllowSubsequentPurchase},
+      {"SynchronousReviewCompletionAllowsImmediateRetry",
+       SynchronousReviewCompletionAllowsImmediateRetry},
+      {"ReviewReplyCanImmediatelyStartPurchaseWithoutClearingNewGuard",
+       ReviewReplyCanImmediatelyStartPurchaseWithoutClearingNewGuard},
       {"ReviewResultsPreserveStatusesAndJsonSemantics",
        ReviewResultsPreserveStatusesAndJsonSemantics},
       {"ReviewAndPurchaseDialogsAreMutuallyExclusiveWithoutQueryTimeout",
