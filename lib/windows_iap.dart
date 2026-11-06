@@ -13,6 +13,7 @@ import 'package:flutter/services.dart';
 import 'models/product.dart';
 import 'models/store_app_license.dart';
 import 'models/store_license.dart';
+import 'models/store_review_result.dart';
 import 'windows_iap_platform_interface.dart';
 
 export 'models/product.dart';
@@ -21,6 +22,7 @@ export 'models/store_availability.dart';
 export 'models/store_collection_data.dart';
 export 'models/store_license.dart';
 export 'models/store_price.dart';
+export 'models/store_review_result.dart';
 export 'models/store_sku.dart';
 export 'models/store_subscription_info.dart';
 
@@ -55,10 +57,7 @@ class StorePurchaseDetails {
   final String? extendedErrorCode;
 
   /// Creates a purchase result.
-  const StorePurchaseDetails({
-    required this.status,
-    this.extendedErrorCode,
-  });
+  const StorePurchaseDetails({required this.status, this.extendedErrorCode});
 
   /// Whether Microsoft Store supplied an additional HRESULT.
   bool get hasExtendedError =>
@@ -73,9 +72,7 @@ class StorePurchaseDetails {
 class WindowsIap {
   void _ensureWindows() {
     if (!Platform.isWindows) {
-      throw UnsupportedError(
-        'windows_store_iap is only available on Windows.',
-      );
+      throw UnsupportedError('windows_store_iap is only available on Windows.');
     }
   }
 
@@ -105,6 +102,18 @@ class WindowsIap {
     return WindowsIapPlatform.instance.makePurchaseDetailed(storeId.trim());
   }
 
+  /// Opens Microsoft's in-app review dialog for the current Store application.
+  ///
+  /// Requires Windows 10 1809+, a Store-associated package and a non-elevated
+  /// process. This user interaction has no artificial timeout. While a review
+  /// or purchase dialog is open, another UI request throws [PlatformException].
+  /// Initialization and native failures also throw [PlatformException].
+  /// No review history is stored or queried by this method.
+  Future<StoreReviewResult> requestReview() {
+    _ensureWindows();
+    return WindowsIapPlatform.instance.requestReview();
+  }
+
   /// Gets the associated Microsoft Store products, including SKU,
   /// subscription period, price, trial and availability data.
   Future<List<Product>> getProducts() {
@@ -123,9 +132,7 @@ class WindowsIap {
   /// verify the subscription with Microsoft's server-side Recurrence API.
   Future<bool> checkPurchase({String storeId = ''}) {
     _ensureWindows();
-    return WindowsIapPlatform.instance.checkPurchase(
-      storeId: storeId.trim(),
-    );
+    return WindowsIapPlatform.instance.checkPurchase(storeId: storeId.trim());
   }
 
   /// Returns the add-on licenses currently reported by Microsoft Store.

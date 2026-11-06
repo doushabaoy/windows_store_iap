@@ -19,6 +19,9 @@ class StoreApi {
       winrt::Windows::Services::Store::StorePurchaseResult>
   RequestPurchaseAsync(winrt::hstring store_id) = 0;
   virtual winrt::Windows::Foundation::IAsyncOperation<
+      winrt::Windows::Services::Store::StoreRateAndReviewResult>
+  RequestRateAndReviewAppAsync() = 0;
+  virtual winrt::Windows::Foundation::IAsyncOperation<
       winrt::Windows::Services::Store::StoreProductQueryResult>
   GetProductsAsync() = 0;
   virtual winrt::Windows::Foundation::IAsyncOperation<

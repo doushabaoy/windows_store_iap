@@ -1,3 +1,17 @@
+## 0.3.0
+
+- Add `requestReview()` to `WindowsStoreIap` and the compatible `WindowsIap`
+  entry point, using Microsoft's official in-app rating and review dialog.
+- Add `StoreReviewStatus` and `StoreReviewResult`, preserving HRESULT and raw
+  JSON diagnostics. Derive `updatedExistingReview` only from a successful
+  response's boolean `data.updated`; missing or malformed data stays unknown.
+- Serialize review and purchase dialogs without applying query timeouts to
+  either interaction. Reuse request cancellation and shutdown protection.
+- Add fake-only native STA/MTA and Dart regression tests, an example review
+  button, and manual MSIX acceptance instructions. Real Store UI is unverified.
+- Existing purchase and license APIs remain source-compatible. Flutter/Dart
+  minimum versions and the C++/WinRT dependency are unchanged.
+
 ## 0.2.5
 
 - Expand native regression coverage for synchronous Store failures, purchase

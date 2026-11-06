@@ -24,6 +24,20 @@ class WindowsStoreApi final : public StoreApi {
   }
 
   winrt::Windows::Foundation::IAsyncOperation<
+      winrt::Windows::Services::Store::StoreRateAndReviewResult>
+  RequestRateAndReviewAppAsync() override {
+    // Query the versioned interface so unsupported systems fail explicitly.
+    const auto review_context =
+        store_.try_as<winrt::Windows::Services::Store::IStoreContext4>();
+    if (!review_context) {
+      throw winrt::hresult_error(
+          E_NOTIMPL,
+          L"In-app reviews require Windows 10 version 1809 or later.");
+    }
+    return review_context.RequestRateAndReviewAppAsync();
+  }
+
+  winrt::Windows::Foundation::IAsyncOperation<
       winrt::Windows::Services::Store::StoreProductQueryResult>
   GetProductsAsync() override {
     return store_.GetAssociatedStoreProductsAsync(

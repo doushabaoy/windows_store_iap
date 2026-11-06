@@ -1,6 +1,6 @@
 # windows_store_iap API
 
-本文档对应 `windows_store_iap 0.2.5`。所有时间均以 UTC 表示；序列化后的时间字段使用 Unix epoch 毫秒。
+本文档对应 `windows_store_iap 0.3.0`。所有时间均以 UTC 表示；序列化后的时间字段使用 Unix epoch 毫秒。
 
 ## 导入和入口
 
@@ -26,6 +26,39 @@ final store = WindowsStoreIap();
 Windows 的取消为尽力而为，不保证 Store 操作立即停止。
 
 ## WindowsStoreIap
+
+### requestReview
+
+```dart
+Future<StoreReviewResult> requestReview()
+```
+
+在 Flutter 平台 UI 线程上调用 `StoreContext.RequestRateAndReviewAppAsync()`，
+使用当前 Flutter 根 HWND 初始化 StoreContext。通过 C++/WinRT 协程等待，
+不阻塞 UI，也不采用 30 秒商品查询超时。支持 Windows 10 1809+、Windows 11，
+要求关联商店的 MSIX、有效 Store 许可证和非管理员进程。
+
+| `StoreReviewResult` 字段 | 类型 | 说明 |
+| --- | --- | --- |
+| `status` | `StoreReviewStatus` | `succeeded`、`canceledByUser`、`networkError`、`error` |
+| `updatedExistingReview` | `bool?` | 成功响应 `data.updated`；true 修改、false 新评价、null 未知 |
+| `extendedErrorCode` | `String?` | 非 S_OK HRESULT（例如 `0x80072EE7`），否则 null |
+| `extendedJsonData` | `String?` | 完整原始 JSON，可能为空或格式错误 |
+
+只有原生成功状态及 JSON `status == "success"`、`data.updated` 为布尔值时才返回
+`updatedExistingReview`。不以官方 `WasUpdated` 属性替代 JSON 含义；该属性仅以
+`wasUpdated` 保留在原生通道载荷中，非 Dart 业务模型字段。未知状态和非法通道
+字段抛出 `FormatException`。系统不支持接口时返回 `0x80004001`，窗口无效返回
+`0x80070578`，线程不符返回 `0x8001010E`，其他原生异常保留 HRESULT 或
+`native_error`，均为 `PlatformException`。
+
+同一插件实例的评价和购买弹窗互斥。进行中为购买时返回
+`purchase_in_progress`，进行中为评价时返回 `review_in_progress`，原生调用结束后
+可以重试。插件销毁时请求被取消并以 `plugin_disposed` 收尾，迟到结果不会重复回传。
+
+本 API 不查询历史评价，不获取星级或正文，不维护“已评价”标记。需要本地记录时由
+业务层在 `succeeded` 后自行持久化。完整使用代码见 [README](../README.md)，
+真实 MSIX 验证步骤见 [example](../example/README.md)。
 
 ### makePurchase
 
@@ -192,7 +225,7 @@ try {
 
 ```yaml
 dependencies:
-  windows_store_iap: ^0.2.2
+  windows_store_iap: ^0.3.0
 ```
 
 ```dart

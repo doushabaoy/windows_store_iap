@@ -37,6 +37,11 @@ abstract class WindowsIapPlatform extends PlatformInterface {
     );
   }
 
+  /// Opens Microsoft's in-app review UI and returns its result.
+  Future<StoreReviewResult> requestReview() {
+    throw UnimplementedError('requestReview() has not been implemented.');
+  }
+
   /// Returns products associated with the current Store application.
   Future<List<Product>> getProducts() {
     throw UnimplementedError('getProducts() has not been implemented.');

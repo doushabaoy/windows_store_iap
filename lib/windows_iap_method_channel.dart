@@ -22,10 +22,9 @@ class MethodChannelWindowsIap extends WindowsIapPlatform {
 
   @override
   Future<StorePurchaseStatus?> makePurchase(String storeId) async {
-    final result = await methodChannel.invokeMethod<int>(
-      'makePurchase',
-      {'storeId': storeId},
-    );
+    final result = await methodChannel.invokeMethod<int>('makePurchase', {
+      'storeId': storeId,
+    });
     if (result == null || result < 0 || result > 4) return null;
     return StorePurchaseStatus.values[result];
   }
@@ -58,6 +57,12 @@ class MethodChannelWindowsIap extends WindowsIapPlatform {
   }
 
   @override
+  Future<StoreReviewResult> requestReview() async {
+    final result = await methodChannel.invokeMethod<Object?>('requestReview');
+    return StoreReviewResult.fromJson(asStringKeyedMap(result));
+  }
+
+  @override
   Future<List<Product>> getProducts() async {
     final result = await methodChannel.invokeMethod<dynamic>('getProducts');
     if (result == null) return const [];
@@ -75,17 +80,17 @@ class MethodChannelWindowsIap extends WindowsIapPlatform {
 
   @override
   Future<bool> checkPurchase({required String storeId}) async {
-    final result = await methodChannel.invokeMethod<bool>(
-      'checkPurchase',
-      {'storeId': storeId},
-    );
+    final result = await methodChannel.invokeMethod<bool>('checkPurchase', {
+      'storeId': storeId,
+    });
     return result ?? false;
   }
 
   @override
   Future<Map<String, StoreLicense>> getAddonLicenses() async {
-    final result =
-        await methodChannel.invokeMethod<dynamic>('getAddonLicenses');
+    final result = await methodChannel.invokeMethod<dynamic>(
+      'getAddonLicenses',
+    );
     if (result == null) return const {};
 
     final dynamic decoded = result is String ? jsonDecode(result) : result;

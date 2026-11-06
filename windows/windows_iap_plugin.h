@@ -15,6 +15,8 @@ namespace windows_iap {
 
 class StoreRequestManager;
 
+enum class StoreUiOperation { kNone, kPurchase, kReview };
+
 class WindowsIapPlugin : public flutter::Plugin {
  public:
   static void RegisterWithRegistrar(flutter::PluginRegistrarWindows* registrar);
@@ -38,7 +40,7 @@ class WindowsIapPlugin : public flutter::Plugin {
   std::chrono::milliseconds query_timeout_;
   std::shared_ptr<std::atomic_bool> alive_;
   std::unique_ptr<StoreRequestManager> requests_;
-  std::shared_ptr<std::atomic_bool> purchase_pending_;
+  std::shared_ptr<std::atomic<StoreUiOperation>> ui_pending_;
 
   std::shared_ptr<StoreApi> CreateStoreForRequest() const;
 

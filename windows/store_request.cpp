@@ -41,8 +41,8 @@ void StoreRequest::Watch(winrt::Windows::Foundation::IAsyncInfo operation,
     Cancel(agile);
     return;
   }
-  // Purchase UI has no artificial deadline: a delayed confirmation must not
-  // invite the caller to start another payment while the first is unresolved.
+  // Interactive Store UI has no artificial deadline: a delayed confirmation
+  // must not invite another purchase/review while the first is unresolved.
   if (timeout <= std::chrono::milliseconds::zero()) return;
 
   std::weak_ptr<StoreRequest> weak = shared_from_this();

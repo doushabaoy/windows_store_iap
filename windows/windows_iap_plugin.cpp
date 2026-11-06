@@ -1,19 +1,19 @@
 #include "windows_iap_plugin.h"
 
-#include "store_request.h"
-
 #include <flutter/standard_method_codec.h>
+#include <winrt/Windows.Data.Json.h>
+#include <winrt/Windows.Foundation.Collections.h>
+#include <winrt/Windows.Services.Store.h>
 
-#include <cstdio>
 #include <cstdint>
+#include <cstdio>
 #include <exception>
 #include <memory>
 #include <optional>
 #include <string>
 #include <utility>
 
-#include <winrt/Windows.Foundation.Collections.h>
-#include <winrt/Windows.Services.Store.h>
+#include "store_request.h"
 
 using namespace winrt;
 using namespace Windows::Foundation::Collections;
@@ -32,25 +32,26 @@ enum class PurchaseResponseKind {
   kDetailed,
 };
 
-class PendingPurchaseReset final {
+class PendingStoreUiReset final {
  public:
-  explicit PendingPurchaseReset(std::shared_ptr<std::atomic_bool> pending)
+  explicit PendingStoreUiReset(
+      std::shared_ptr<std::atomic<StoreUiOperation>> pending)
       : pending_(std::move(pending)) {}
 
-  ~PendingPurchaseReset() { Release(); }
+  ~PendingStoreUiReset() { Release(); }
 
   void Release() {
     if (pending_) {
-      pending_->store(false);
+      pending_->store(StoreUiOperation::kNone);
       pending_.reset();
     }
   }
 
-  PendingPurchaseReset(const PendingPurchaseReset&) = delete;
-  PendingPurchaseReset& operator=(const PendingPurchaseReset&) = delete;
+  PendingStoreUiReset(const PendingStoreUiReset&) = delete;
+  PendingStoreUiReset& operator=(const PendingStoreUiReset&) = delete;
 
  private:
-  std::shared_ptr<std::atomic_bool> pending_;
+  std::shared_ptr<std::atomic<StoreUiOperation>> pending_;
 };
 
 flutter::EncodableValue Key(const char* value) {
@@ -338,9 +339,9 @@ bool LicenseMatchesStoreId(const std::string& collection_key,
 foundation::IAsyncAction MakePurchase(
     std::shared_ptr<StoreApi> store, hstring store_id,
     PurchaseResponseKind response_kind,
-    std::shared_ptr<std::atomic_bool> purchase_pending,
+    std::shared_ptr<std::atomic<StoreUiOperation>> ui_pending,
     std::shared_ptr<StoreRequest> result) {
-  PendingPurchaseReset reset(std::move(purchase_pending));
+  PendingStoreUiReset reset(std::move(ui_pending));
   try {
     auto operation = store->RequestPurchaseAsync(std::move(store_id));
     result->Watch(operation, std::chrono::milliseconds::zero());
@@ -373,6 +374,66 @@ foundation::IAsyncAction MakePurchase(
   } catch (const std::exception& error) {
     reset.Release();
     result->Error("native_error", error.what());
+  }
+}
+
+flutter::EncodableValue UpdatedExistingReview(StoreRateAndReviewStatus status,
+                                              const hstring& json) {
+  using namespace Windows::Data::Json;
+  if (status != StoreRateAndReviewStatus::Succeeded || json.empty()) return {};
+  JsonObject root;
+  if (!JsonObject::TryParse(json, root)) return {};
+  const auto response_status = root.TryLookup(L"status");
+  if (!response_status ||
+      response_status.ValueType() != JsonValueType::String ||
+      response_status.GetString() != L"success") {
+    return {};
+  }
+  const auto data = root.TryLookup(L"data");
+  if (!data || data.ValueType() != JsonValueType::Object) return {};
+  const auto updated = data.GetObject().TryLookup(L"updated");
+  if (!updated || updated.ValueType() != JsonValueType::Boolean) return {};
+  return flutter::EncodableValue(updated.GetBoolean());
+}
+
+foundation::IAsyncAction RequestReview(
+    std::shared_ptr<StoreApi> store,
+    std::shared_ptr<std::atomic<StoreUiOperation>> ui_pending,
+    std::shared_ptr<StoreRequest> result) {
+  PendingStoreUiReset reset(std::move(ui_pending));
+  try {
+    auto operation = store->RequestRateAndReviewAppAsync();
+    result->Watch(operation, std::chrono::milliseconds::zero());
+    const StoreRateAndReviewResult review = co_await operation;
+    if (!result->pending()) co_return;
+    if (!review) {
+      throw hresult_error(E_UNEXPECTED,
+                          L"Microsoft Store returned no review result.");
+    }
+    const auto status = review.Status();
+    const auto extended_error = review.ExtendedError();
+    const auto json = review.ExtendedJsonData();
+    flutter::EncodableMap details;
+    details[Key("status")] = static_cast<int32_t>(status);
+    details[Key("extendedErrorCode")] =
+        extended_error.value == S_OK
+            ? flutter::EncodableValue()
+            : flutter::EncodableValue(HResultCode(extended_error));
+    details[Key("extendedJsonData")] = to_string(json);
+    // WasUpdated is the official property, not the JSON data.updated flag.
+    details[Key("wasUpdated")] = review.WasUpdated();
+    details[Key("updatedExistingReview")] = UpdatedExistingReview(status, json);
+    reset.Release();
+    result->Success(flutter::EncodableValue(details));
+  } catch (const hresult_error& error) {
+    reset.Release();
+    SendHResultError(error, result.get());
+  } catch (const std::exception& error) {
+    reset.Release();
+    result->Error("native_error", error.what());
+  } catch (...) {
+    reset.Release();
+    result->Error("native_error", "Unexpected Microsoft Store review failure.");
   }
 }
 
@@ -522,7 +583,8 @@ WindowsIapPlugin::WindowsIapPlugin(flutter::BinaryMessenger* messenger,
       query_timeout_(query_timeout),
       alive_(std::make_shared<std::atomic_bool>(true)),
       requests_(std::make_unique<StoreRequestManager>()),
-      purchase_pending_(std::make_shared<std::atomic_bool>(false)) {
+      ui_pending_(std::make_shared<std::atomic<StoreUiOperation>>(
+          StoreUiOperation::kNone)) {
   channel_->SetMethodCallHandler(
       [this, alive = alive_](const auto& call, auto result) {
         if (!alive->load()) {
@@ -582,37 +644,53 @@ void WindowsIapPlugin::HandleMethodCall(
   const auto& method = method_call.method_name();
   if (method != "makePurchase" && method != "makePurchaseDetailed" &&
       method != "getProducts" && method != "checkPurchase" &&
-      method != "getAddonLicenses" && method != "getAppLicense") {
+      method != "getAddonLicenses" && method != "getAppLicense" &&
+      method != "requestReview") {
     request->NotImplemented();
     return;
   }
 
-  if (method == "makePurchase" || method == "makePurchaseDetailed") {
+  if (method == "makePurchase" || method == "makePurchaseDetailed" ||
+      method == "requestReview") {
+    const bool review = method == "requestReview";
     const auto store_id = StringArgument(method_call, "storeId");
-    if (!store_id.has_value() || store_id->empty()) {
+    if (!review && (!store_id.has_value() || store_id->empty())) {
       request->Error("invalid_arguments", "storeId must not be empty.");
       return;
     }
-    if (purchase_pending_->exchange(true)) {
-      request->Error("purchase_in_progress",
-                     "A Microsoft Store purchase is already in progress.");
+    auto pending = StoreUiOperation::kNone;
+    if (!ui_pending_->compare_exchange_strong(
+            pending,
+            review ? StoreUiOperation::kReview : StoreUiOperation::kPurchase)) {
+      request->Error(pending == StoreUiOperation::kReview
+                         ? "review_in_progress"
+                         : "purchase_in_progress",
+                     "A Microsoft Store purchase or review dialog is already "
+                     "in progress.");
       return;
     }
 
     try {
-      const auto native_store_id = to_hstring(*store_id);
       auto store = CreateStoreForRequest();
-      MakePurchase(std::move(store), native_store_id,
-                   method == "makePurchaseDetailed"
-                       ? PurchaseResponseKind::kDetailed
-                       : PurchaseResponseKind::kStatusOnly,
-                   purchase_pending_, request);
+      if (review) {
+        RequestReview(std::move(store), ui_pending_, request);
+      } else {
+        const auto native_store_id = to_hstring(*store_id);
+        MakePurchase(std::move(store), native_store_id,
+                     method == "makePurchaseDetailed"
+                         ? PurchaseResponseKind::kDetailed
+                         : PurchaseResponseKind::kStatusOnly,
+                     ui_pending_, request);
+      }
     } catch (const hresult_error& error) {
-      purchase_pending_->store(false);
+      ui_pending_->store(StoreUiOperation::kNone);
       SendHResultError(error, request.get());
     } catch (const std::exception& error) {
-      purchase_pending_->store(false);
+      ui_pending_->store(StoreUiOperation::kNone);
       request->Error("native_error", error.what());
+    } catch (...) {
+      ui_pending_->store(StoreUiOperation::kNone);
+      request->Error("native_error", "Unexpected Microsoft Store UI failure.");
     }
     return;
   }

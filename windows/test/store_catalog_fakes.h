@@ -206,6 +206,10 @@ class CatalogStoreApi final : public StoreApi {
   IAsyncOperation<StoreAppLicense> GetAppLicenseAsync() override {
     return nullptr;
   }
+  IAsyncOperation<StoreRateAndReviewResult> RequestRateAndReviewAppAsync()
+      override {
+    return nullptr;
+  }
 
  private:
   CatalogShape shape_;

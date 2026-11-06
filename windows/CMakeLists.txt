@@ -8,6 +8,12 @@ cmake_minimum_required(VERSION 3.14)
 set(PROJECT_NAME "windows_store_iap")
 project(${PROJECT_NAME} LANGUAGES CXX)
 
+if(CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION AND
+   CMAKE_VS_WINDOWS_TARGET_PLATFORM_VERSION VERSION_LESS "10.0.17763.0")
+  message(FATAL_ERROR
+    "windows_store_iap reviews require Windows SDK 10.0.17763.0 or newer.")
+endif()
+
 include(FetchContent)
 set(CPPWINRT_VERSION "2.0.221121.5")
 
